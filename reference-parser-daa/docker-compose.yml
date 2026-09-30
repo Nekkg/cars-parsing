@@ -1,0 +1,211 @@
+networks:
+  app_network:
+    external: false
+    name: ${NETWORK_NAME:-parser_network}
+
+services:
+  web:
+    build: .
+    container_name: ${CONTAINER_PREFIX:-parser}_core
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - .:/app
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_HOST=db
+      - POSTGRES_PORT=${POSTGRES_PORT}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-StrongRedisPassword123!}
+      - TZ=${TZ:-UTC}
+      - WEBSITE_URL=${WEBSITE_URL:-https://example.com}
+    command: python manage.py runserver 0.0.0.0:8000
+    restart: unless-stopped
+    networks:
+      - app_network
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+
+  db:
+    image: postgres:17
+    container_name: ${CONTAINER_PREFIX:-parser}_postgres
+    env_file:
+      - .env
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - TZ=${TZ:-UTC}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - app_network
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+
+  redis:
+    image: redis:7
+    container_name: ${CONTAINER_PREFIX:-parser}_redis
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-StrongRedisPassword123!}", "ping"]
+      interval: 30s
+      retries: 3
+      start_period: 30s
+      timeout: 10s
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-StrongRedisPassword123!} --protected-mode yes
+    networks:
+      - app_network
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 0.5G
+
+  bot:
+    build:
+      context: .
+    container_name: ${CONTAINER_PREFIX:-parser}_telegram_bot
+    volumes:
+      - .:/app
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_HOST=db
+      - POSTGRES_PORT=${POSTGRES_PORT}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-StrongRedisPassword123!}
+      - TZ=${TZ:-UTC}
+      - WEBSITE_URL=${WEBSITE_URL:-https://example.com}
+    command: python bot/tg_bot.py
+    restart: unless-stopped
+    networks:
+      - app_network
+    deploy:
+      resources:
+        limits:
+          cpus: '0.8'
+          memory: 0.8G
+
+  chrome_driver:
+    image: selenium/standalone-chrome:latest
+    container_name: ${CONTAINER_PREFIX:-parser}_chrome_driver
+    ports:
+      - "127.0.0.1:4444:4444"
+      - "127.0.0.1:7900:7900"
+    environment:
+      - SE_NODE_MAX_INSTANCES=3
+      - SE_NODE_MAX_SESSIONS=3
+      - SE_NODE_OVERRIDE_MAX_SESSIONS=true
+      - TZ=${TZ:-UTC}
+    shm_size: 6gb
+    restart: unless-stopped
+    networks:
+      - app_network
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+
+  parsers:
+    build:
+      context: .
+    container_name: ${CONTAINER_PREFIX:-parser}_parsers
+    depends_on:
+      - chrome_driver
+      - redis
+      - db
+    volumes:
+      - .:/app
+    env_file:
+      - .env
+    environment:
+      - TZ=${TZ:-UTC}
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-StrongRedisPassword123!}
+    command: python -u run_collectors.py
+    restart: unless-stopped
+    networks:
+      - app_network
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+
+  ads_sync:
+    profiles: ["legacy"]
+    build:
+      context: .
+    container_name: ${CONTAINER_PREFIX:-parser}_ads_sync
+    depends_on:
+      - redis
+      - db
+      - web
+    volumes:
+      - .:/app
+    env_file:
+      - .env
+    environment:
+      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_HOST=db
+      - POSTGRES_PORT=${POSTGRES_PORT}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-StrongRedisPassword123!}
+      - TZ=${TZ:-UTC}
+      - WEBSITE_URL=${WEBSITE_URL:-https://example.com}
+      - ADS_CLEANUP_DAYS=${ADS_CLEANUP_DAYS:-7}
+      - ADS_SYNC_INTERVAL=${ADS_SYNC_INTERVAL:-60}
+    command: python manage.py run_ads_tasks --cleanup-days=${ADS_CLEANUP_DAYS:-7} --interval=${ADS_SYNC_INTERVAL:-60}
+    restart: unless-stopped
+    networks:
+      - app_network
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 0.5G
+
+volumes:
+  postgres_data:
+  redis_data:

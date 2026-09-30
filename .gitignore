@@ -1,0 +1,20 @@
+# Local research checkout, not an application dependency
+/catalog-reference/
+
+# Credentials and local runtime data
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*cookies*.pkl
+*.log
+*.sqlite3
+*.sqlite3-journal
+dump.rdb
+__pycache__/
+.venv/
+venv/
+diagnostics/
+media/
+screenshots/
