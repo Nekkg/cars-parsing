@@ -5,6 +5,7 @@ import threading
 import logging
 import json
 from pathlib import Path
+from core.paths import DIAGNOSTICS_DIR
 from urllib.request import Request, urlopen
 from datetime import timedelta
 os.environ.setdefault('DJANGO_SETTINGS_MODULE','core.settings')
@@ -22,6 +23,8 @@ from parsers.models import Parser
 from parsers.sources import source_url, extract_listings, enrich, SourceBlocked
 from core.network import source_opener, proxy_setting
 from parsers.browser_session import RecoveringBrowser, session_expired
+from parsers.avito_client import AvitoClient, avito_proxy, http_enabled
+
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s')
 logger = logging.getLogger('collectors')
@@ -69,8 +72,10 @@ def save_ad(ad):
 
 
 def browser(source):
-    session_file = Path('diagnostics') / f'session_{source}.json'
-    route = proxy_setting('SOURCES_PROXY_URL')
+    if source == 'avito' and http_enabled():
+        return AvitoClient()
+    session_file = DIAGNOSTICS_DIR / f'session_{source}.json'
+    route = avito_proxy() if source == 'avito' else proxy_setting('SOURCES_PROXY_URL')
     saved = json.loads(session_file.read_text()) if session_file.exists() else {}
     if saved.get('id') and saved.get('proxy') == route:
         session_id = saved['id']
@@ -86,6 +91,8 @@ def browser(source):
             pass
     options = webdriver.ChromeOptions()
     options.page_load_strategy = 'eager'
+    if source == 'avito':
+        options.add_argument('--user-data-dir=/home/seluser/avito-profile')
     options.add_argument(f'--proxy-server={route}' if route else '--no-proxy-server')
     # Avito remains visible in noVNC for a user's manual access check; no CAPTCHA solver.
     if source != 'avito':
@@ -151,7 +158,7 @@ def collect(driver, source, job):
     count = state.get('count',0)
     update_status(job.pk,source,**{**state,'status':'сбор выдачи','error':'','error_code':'','attempt_at':token,'checked_at':None})
     html = load_page(driver,source,source_url(source,filters,page))
-    if source != 'drom':
+    if source == 'autoru' or (source == 'avito' and not http_enabled()):
         try:
             WebDriverWait(driver,8).until(lambda d: d.find_elements(By.CSS_SELECTOR,
                 '[data-marker="item"], .ListingItem, [data-seo="listing-item"]'))

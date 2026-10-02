@@ -26,7 +26,7 @@ docker compose up -d --force-recreate bot web parsers
 Проверка соединений (не выводит токен):
 
 ```powershell
-docker compose exec web python check_network.py
+docker compose exec web python -m scripts.diagnostics.check_network
 ```
 
 Avito может ограничивать также прямой домашний IP. Правильный маршрут не гарантирует

@@ -25,6 +25,7 @@ from ads.search import results, snapshot
 from core.network import telegram_session
 
 import logging
+from core.paths import BOT_LOG_FILE
 
 
 logging.basicConfig(
@@ -32,7 +33,7 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler('bot_logs.log', mode='a')
+        logging.FileHandler(BOT_LOG_FILE, mode='a')
     ]
 )
 
@@ -107,6 +108,7 @@ async def send_ads_by_filters(redis_client: redis.Redis):
 
 
 import logging
+from core.paths import BOT_LOG_FILE
 
 # Вспомогательные функции для экранирования и оформления MarkdownV2
 def escape_md_v2(text: str) -> str:

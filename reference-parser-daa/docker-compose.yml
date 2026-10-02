@@ -134,6 +134,8 @@ services:
       - SE_NODE_MAX_SESSIONS=3
       - SE_NODE_OVERRIDE_MAX_SESSIONS=true
       - TZ=${TZ:-UTC}
+    volumes:
+      - avito_browser_profile:/home/seluser/avito-profile
     shm_size: 6gb
     restart: unless-stopped
     networks:
@@ -159,7 +161,7 @@ services:
     environment:
       - TZ=${TZ:-UTC}
       - REDIS_PASSWORD=${REDIS_PASSWORD:-StrongRedisPassword123!}
-    command: python -u run_collectors.py
+    command: python -u -m parsers.collector
     restart: unless-stopped
     networks:
       - app_network
@@ -207,5 +209,6 @@ services:
           memory: 0.5G
 
 volumes:
+  avito_browser_profile:
   postgres_data:
   redis_data:

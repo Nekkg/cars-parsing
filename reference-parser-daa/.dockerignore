@@ -9,3 +9,7 @@ screenshots
 media
 *_cookies.pkl
 diagnostics
+
+*cookies*.json
+
+runtime

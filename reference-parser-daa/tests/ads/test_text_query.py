@@ -100,7 +100,7 @@ class QueryPersistenceTests(TestCase):
         self.assertFalse(User.objects.get(user_id=7).monitoring_enabled)
 
     def test_source_backoff_survives_worker_restart(self):
-        from run_collectors import saved_backoff_seconds
+        from parsers.collector import saved_backoff_seconds
         SearchJob.objects.create(fingerprint='backoff',source_state={'avito':{'retry_after':(timezone.now()+timedelta(minutes=10)).isoformat()}})
         self.assertGreater(saved_backoff_seconds('avito'),590)
         self.assertEqual(saved_backoff_seconds('autoru'),0)

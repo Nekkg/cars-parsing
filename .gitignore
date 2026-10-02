@@ -1,5 +1,5 @@
 # Local research checkout, not an application dependency
-/catalog-reference/
+/references/
 
 # Credentials and local runtime data
 .env
@@ -18,3 +18,10 @@ venv/
 diagnostics/
 media/
 screenshots/
+
+# Private Avito session exports
+*cookies*.json
+
+# Runtime artifacts
+runtime/
+

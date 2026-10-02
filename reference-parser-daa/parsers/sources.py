@@ -57,6 +57,11 @@ def check_block(soup, source):
 def extract_listings(html, source):
     soup = BeautifulSoup(html, 'html.parser')
     check_block(soup, source)
+    if source == 'avito':
+        from .avito_client import structured_listings
+        structured = structured_listings(soup)
+        if structured is not None:
+            return structured
     selectors = {'drom':'[data-ftid="bulls-list_bull"]', 'avito':'[data-marker="item"]',
                  'autoru':'[data-seo="listing-item"], .ListingItem'}
     cards = soup.select(selectors[source])

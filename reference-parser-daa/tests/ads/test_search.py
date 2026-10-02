@@ -79,11 +79,11 @@ class SourceMarkupTests(SimpleTestCase):
 
 class PersistenceTests(TestCase):
     def test_partial_listing_saved_before_next_page_failure(self):
-        from run_collectors import collect
+        from parsers.collector import collect
         from ads.models import SearchJob
         job = SearchJob.objects.create(fingerprint='partial-test', filters={})
         card = '<div data-ftid="bulls-list_bull"><a data-ftid="bull_title" href="https://auto.drom.ru/bmw/x5/12345678.html">BMW X5, 2020</a><span data-ftid="bull_price">5000000</span></div><a href="/bmw/x5/page2/">2</a>'
-        with patch('run_collectors.PAGES',2), patch('run_collectors.time.sleep'), patch('run_collectors.load_page',side_effect=[card,SourceBlocked('blocked')]):
+        with patch('parsers.collector.PAGES',2), patch('parsers.collector.time.sleep'), patch('parsers.collector.load_page',side_effect=[card,SourceBlocked('blocked')]):
             collect(None,'drom',job)
             with self.assertRaises(SourceBlocked):
                 collect(None,'drom',job)

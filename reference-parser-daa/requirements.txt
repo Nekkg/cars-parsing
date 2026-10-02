@@ -38,3 +38,5 @@ wsproto==1.2.0
 yarl==1.18.3
 beautifulsoup4==4.13.4
 aiohttp-socks==0.10.1
+
+curl_cffi==0.15.0

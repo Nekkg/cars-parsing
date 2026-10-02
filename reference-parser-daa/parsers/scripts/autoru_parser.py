@@ -7,6 +7,7 @@ import redis
 import os
 import shutil
 import pickle
+from core.paths import SESSIONS_DIR, SCREENSHOTS_DIR
 from datetime import datetime
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -75,7 +76,7 @@ class AutoruParser:
     def _save_cookies(self):
         """Сохраняет cookies текущей сессии"""
         try:
-            with open('autoru_cookies.pkl', 'wb') as file:
+            with open(str(SESSIONS_DIR / 'autoru_cookies.pkl'), 'wb') as file:
                 pickle.dump(self.driver.get_cookies(), file)
             self.logger.info("Cookies успешно сохранены")
         except Exception as e:
@@ -84,8 +85,8 @@ class AutoruParser:
     def _load_cookies(self):
         """Загружает сохраненные cookies"""
         try:
-            if os.path.exists('autoru_cookies.pkl'):
-                with open('autoru_cookies.pkl', 'rb') as file:
+            if os.path.exists(str(SESSIONS_DIR / 'autoru_cookies.pkl')):
+                with open(str(SESSIONS_DIR / 'autoru_cookies.pkl'), 'rb') as file:
                     cookies = pickle.load(file)
                     # Сначала нужно открыть сайт, чтобы установить домен для cookies
                     self.driver.get("https://auto.ru")
@@ -136,7 +137,7 @@ class AutoruParser:
     def _cleanup_old_screenshots(self):
         """Удаляет старые директории со скриншотами, оставляя только последние N директорий"""
         try:
-            base_dir = "screenshots/autoru"
+            base_dir = str(SCREENSHOTS_DIR / "autoru")
             if not os.path.exists(base_dir):
                 os.makedirs(base_dir, exist_ok=True)
                 return
@@ -162,7 +163,7 @@ class AutoruParser:
     
     def _init_screenshot_dir(self):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        directory = f"screenshots/autoru/main_loop_{timestamp}"
+        directory = f"{SCREENSHOTS_DIR}/autoru/main_loop_{timestamp}"
         os.makedirs(directory, exist_ok=True)
         return directory
         
@@ -681,7 +682,7 @@ class AutoruParser:
                     count = 0
                     # Create a new directory for ad details screenshots only if we have new ads
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    ads_dir = f"screenshots/autoru/load_ads_{timestamp}"
+                    ads_dir = f"{SCREENSHOTS_DIR}/autoru/load_ads_{timestamp}"
                     os.makedirs(ads_dir, exist_ok=True)
                     
                     # Ограничиваем количество обрабатываемых объявлений

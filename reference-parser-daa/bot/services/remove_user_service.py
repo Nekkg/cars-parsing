@@ -2,13 +2,14 @@ from django.db import transaction
 from users.models import User, UserFilters
 
 import logging
+from core.paths import BOT_LOG_FILE
 
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler('bot_logs.log', mode='a')  # Запись логов в файл 'bot_logs.log'
+        logging.FileHandler(BOT_LOG_FILE, mode='a')  # Локальный журнал в runtime/logs/bot.log
     ]
 )
 

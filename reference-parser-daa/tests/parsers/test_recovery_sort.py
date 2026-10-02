@@ -69,9 +69,9 @@ class UnifiedResultsTests(TestCase):
         self.assertEqual(len(results({'platform':['avito']},'cheap')),1)
 
     def test_missing_city_is_queued_for_detail_instead_of_discarded(self):
-        from run_collectors import collect
+        from parsers.collector import collect
         job=SearchJob.objects.create(fingerprint='missingcity',filters={'city':['Самара']})
         html='<div data-ftid="bulls-list_bull"><a data-ftid="bull_title" href="https://auto.drom.ru/bmw/x5/123456789.html">BMW X5, 2020</a><span data-ftid="bull_price">1000000</span></div>'
-        with patch('run_collectors.load_page',return_value=html): collect(None,'drom',job)
+        with patch('parsers.collector.load_page',return_value=html): collect(None,'drom',job)
         job.refresh_from_db()
         self.assertEqual(len(job.source_state['drom']['detail_queue']),1)

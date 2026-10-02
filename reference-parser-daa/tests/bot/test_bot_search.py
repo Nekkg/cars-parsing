@@ -90,11 +90,11 @@ class FilterTests(SimpleTestCase):
 
 class CollectionTests(TestCase):
     def test_details_are_resumable_and_finish_after_listing(self):
-        from run_collectors import collect
+        from parsers.collector import collect
         job=SearchJob.objects.create(fingerprint='details',filters={'engine':['бензин']})
         card='<div data-ftid="bulls-list_bull"><a data-ftid="bull_title" href="https://auto.drom.ru/bmw/x5/12345678.html">BMW X5, 2020</a><span data-ftid="bull_price">5000000</span></div>'
         detail='<table><tr data-ftid="specification-engine"><th>Двигатель</th><td>бензин</td></tr></table>'
-        with patch('run_collectors.load_page',side_effect=[card,detail]):
+        with patch('parsers.collector.load_page',side_effect=[card,detail]):
             collect(None,'drom',job)
             job.refresh_from_db()
             self.assertEqual(len(job.source_state['drom']['detail_queue']),1)
@@ -112,14 +112,14 @@ class CollectionTests(TestCase):
         self.assertEqual([a.pk for a in results({})],[second.pk,first.pk])
 
     def test_pagination_continues_beyond_three_pages_and_stops_at_end(self):
-        from run_collectors import collect
+        from parsers.collector import collect
         job=SearchJob.objects.create(fingerprint='pages',filters={})
         pages=[]
         for i in range(1,6):
             html=f'<div data-ftid="bulls-list_bull"><a data-ftid="bull_title" href="https://auto.drom.ru/bmw/x5/{12345670+i}.html">BMW X5, 2020</a><span data-ftid="bull_price">5000000</span></div>'
             if i<5: html+=f'<a href="/bmw/x5/page{i+1}/">next</a>'
             pages.append(html)
-        with patch('run_collectors.load_page',side_effect=pages):
+        with patch('parsers.collector.load_page',side_effect=pages):
             for _ in pages: collect(None,'drom',job)
         job.refresh_from_db()
         self.assertEqual(job.source_state['drom']['count'],5)
