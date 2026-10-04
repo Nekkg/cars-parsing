@@ -6,6 +6,7 @@ No external cookie service, paid requests or proxy rotation are enabled.
 """
 import html
 import json
+import logging
 import os
 import re
 import time
@@ -13,6 +14,8 @@ from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
 from core.network import proxy_setting
+
+logger = logging.getLogger(__name__)
 
 
 def avito_proxy():
@@ -28,10 +31,15 @@ def http_enabled():
 
 
 class AvitoClient:
-    """One persistent session per worker, one request per call; blocks propagate."""
+    """One persistent HTTP session per worker, with bounded local PoW recovery."""
     def __init__(self):
         from curl_cffi.requests import Session
-        self.session = Session(impersonate='chrome', trust_env=False, proxy=avito_proxy())
+        profile = os.getenv('AVITO_HTTP_PROFILE', 'firefox147').strip()
+        from curl_cffi.requests.impersonate import BrowserType
+        allowed = {item.value for item in BrowserType} | {'chrome', 'firefox', 'safari', 'edge'}
+        if profile not in allowed:
+            raise ValueError('Unsupported AVITO_HTTP_PROFILE')
+        self.session = Session(impersonate=profile, trust_env=False, proxy=avito_proxy())
         self.session.headers.update({'Accept-Language': 'ru-RU,ru;q=0.9',
                                      'Referer': 'https://www.avito.ru/'})
         self.page_source = ''
@@ -67,32 +75,148 @@ class AvitoClient:
             self.session.cookies.set(name, value, domain=domain, path=path_value)
         self.cookie_stamp = stamp
 
+    @staticmethod
+    def validate_url(url):
+        parsed = urlparse(url)
+        if parsed.scheme != 'https' or parsed.hostname not in ('avito.ru', 'www.avito.ru', 'm.avito.ru') or parsed.username or parsed.password or parsed.port not in (None, 443):
+            raise ValueError('Expected HTTPS Avito URL')
+
+    def request(self, method, url, *, deadline, _challenge=False, **kwargs):
+        from parsers.sources import SourceBlocked
+        if _challenge:
+            from parsers.avito_captcha import validate_captcha_url
+            validate_captcha_url(url)
+            if method != 'get':
+                raise ValueError('Only GET captcha resources are allowed')
+        else:
+            self.validate_url(url)
+        delay = max(0, 5 - (time.monotonic() - self.last_request))
+        remaining = deadline - time.monotonic() - delay
+        if remaining <= 0:
+            raise SourceBlocked('avito: request time budget exceeded')
+        if delay:
+            time.sleep(delay)
+        try:
+            # Explicit same session, route, cookies and no automatic redirects.
+            if method != 'get':
+                return getattr(self.session, method)(url, timeout=min(20, remaining),
+                                                     allow_redirects=False, **kwargs)
+            from curl_cffi.requests.exceptions import ConnectionError, IncompleteRead, Timeout
+            for attempt in range(2):
+                response = None
+                try:
+                    response = self.session.get(url, timeout=min(20, remaining),
+                                                allow_redirects=False, stream=True, **kwargs)
+                    chunks, size = [], 0
+                    try:
+                        for chunk in response.iter_content():
+                            size += len(chunk)
+                            if size > 10_000_000:
+                                raise SourceBlocked('avito: response size limit exceeded')
+                            chunks.append(chunk)
+                    except (ConnectionError, IncompleteRead, Timeout):
+                        content = b''.join(chunks)
+                        # Curl may signal a trailer error after the complete HTML.
+                        # Accept only a complete document, never a truncated listing.
+                        if response.status_code != 200 or not re.search(rb'</html>\s*$', content, re.I):
+                            raise
+                    response.content = b''.join(chunks)
+                    return response
+                except (ConnectionError, IncompleteRead, Timeout):
+                    if attempt:
+                        raise
+                    remaining = deadline - time.monotonic() - 5
+                    if remaining <= 0:
+                        raise SourceBlocked('avito: transport retry budget exceeded') from None
+                    time.sleep(5)
+                finally:
+                    if response is not None:
+                        response.close()
+        finally:
+            self.last_request = time.monotonic()
+
+    def recover_pow(self, response, url, *, deadline):
+        from parsers.avito_pow import pow_challenge, result, solution
+        from parsers.sources import SourceBlocked
+        challenge = pow_challenge(response, self.session.cookies)
+        if not challenge:
+            return False
+        headers = {'Accept': 'application/json', 'Origin': 'https://www.avito.ru',
+                   'Referer': url, 'Sec-Fetch-Dest': 'empty',
+                   'Sec-Fetch-Mode': 'cors', 'Sec-Fetch-Site': 'same-origin'}
+        origin = 'https://www.avito.ru/web/3/firewallPow/'
+        task = result(self.request('post', origin + 'get', deadline=deadline,
+                                   headers=headers, json={'challenge': challenge}))
+        work = solution(task.get('challenge_jwt'), seconds=deadline-time.monotonic())
+        verified = result(self.request('post', origin + 'verify', deadline=deadline,
+                                       headers=headers, json=work))
+        if verified.get('verified') is not True:
+            raise SourceBlocked('avito: PoW verification rejected')
+        logger.info('Avito local PoW verification accepted')
+        return True
+
     def get(self, url):
         from parsers.sources import SourceBlocked, check_block
         from bs4 import BeautifulSoup
-        parsed = urlparse(url)
-        if parsed.scheme != 'https' or parsed.hostname not in ('avito.ru', 'www.avito.ru', 'm.avito.ru'):
-            raise ValueError('Expected HTTPS Avito URL')
+        self.validate_url(url)
         self.load_cookies()
-        delay = max(0, 5 - (time.monotonic() - self.last_request))
-        if delay:
-            time.sleep(delay)
         self.page_source = ''
-        try:
-            # Do not forward cookies to an unexpected redirect destination.
-            response = self.session.get(url, timeout=30, allow_redirects=False)
-        finally:
-            self.last_request = time.monotonic()
-        if response.status_code in (403, 429, 439):
-            raise SourceBlocked(f'avito: HTTP {response.status_code}; access restricted')
-        if 300 <= response.status_code < 400:
-            raise SourceBlocked('avito: redirected; browser access check required')
-        response.raise_for_status()
-        check_block(BeautifulSoup(response.text, 'html.parser'), 'avito')
-        self.page_source = response.text
+        deadline = time.monotonic() + 90
+        visited, recoveries, captcha_recoveries = set(), 0, 0
+        for _ in range(4):
+            if url in visited:
+                raise SourceBlocked('avito: redirect loop')
+            visited.add(url)
+            while True:
+                response = self.request('get', url, deadline=deadline)
+                if response.status_code not in (403, 429, 439):
+                    break
+                if recoveries < 2 and self.recover_pow(response, url, deadline=deadline):
+                    recoveries += 1
+                    continue  # Retry the exact URL, including city, query and page.
+                from parsers.avito_captcha import recover_captcha
+                if captcha_recoveries < 2 and recover_captcha(self, response, url, deadline):
+                    captcha_recoveries += 1
+                    continue
+                raise SourceBlocked(f'avito: HTTP {response.status_code}; access restricted after bounded recovery')
+            target = response.headers.get('Location') if 300 <= response.status_code < 400 else None
+            response.raise_for_status()
+            soup = BeautifulSoup(response.text, 'html.parser')
+            check_block(soup, 'avito')
+            target = target or ssr_redirect(soup)
+            if target:
+                target = urljoin(url, target)
+                try:
+                    self.validate_url(target)
+                except ValueError:
+                    raise SourceBlocked('avito: unsafe redirect rejected') from None
+                url = target
+                continue
+            self.page_source = response.text
+            return
+        raise SourceBlocked('avito: too many redirects')
 
     def quit(self):
         self.session.close()
+
+
+def ssr_redirect(soup):
+    """Avito can encode a canonical search redirect in a successful HTML response."""
+    for script in soup.select('script[data-mfe-state], script[type="application/json"]'):
+        try:
+            payload = json.loads(html.unescape(script.get_text()))
+        except (ValueError, TypeError):
+            continue
+        loader = payload.get('loaderData', {}) if isinstance(payload, dict) else {}
+        if not isinstance(loader, dict):
+            continue
+        target = loader.get('redirect')
+        if isinstance(target, str) and target:
+            return target
+        data = loader.get('data', {})
+        if isinstance(data, dict) and data.get('redirected') and isinstance(data.get('url'), str):
+            return data['url']
+    return None
 
 
 def catalog_items(payload):
@@ -130,6 +254,21 @@ def listing_image(item):
     return ''
 
 
+def vehicle_name(title):
+    stem = re.split(r',\s*(?:19|20)\d{2}', title)[0]
+    brand, _, model = stem.partition(' ')
+    for make in ('Land Rover', 'Great Wall', 'Alfa Romeo', 'Aston Martin', 'Rolls Royce'):
+        if stem.lower().startswith(make.lower() + ' '):
+            brand, model = make, stem[len(make)+1:]
+            break
+    model = re.split(r'\s+\d+(?:\.\d+)?\s+(?:AT|MT|CVT|AMT|DCT)\b', model, flags=re.I)[0].strip()
+    if brand.lower() == 'bmw':
+        model = re.sub(r'^([1-8])\s+(?:\u0441\u0435\u0440\u0438\u044f|series)$', r'\1-series', model, flags=re.I)
+    if brand.lower() == 'mercedes-benz':
+        model = re.sub(r'\s+\u043a\u043b\u0430\u0441\u0441$', '-Class', model, flags=re.I)
+    return brand, model
+
+
 def normalize_item(item):
     from parsers.sources import number
     if not isinstance(item, dict):
@@ -145,13 +284,7 @@ def normalize_item(item):
     price = number(price.get('value')) if isinstance(price, dict) else None
     if not price:
         return None
-    stem = re.split(r',\s*(?:19|20)\d{2}', name)[0]
-    brand, _, model = stem.partition(' ')
-    # Multi-word makes must not shift a word into the model.
-    for make in ('Land Rover', 'Great Wall', 'Alfa Romeo', 'Aston Martin', 'Rolls Royce'):
-        if stem.lower().startswith(make.lower() + ' '):
-            brand, model = make, stem[len(make)+1:]
-            break
+    brand, model = vehicle_name(name)
     location = item.get('location') or {}
     address = item.get('addressDetailed') or {}
     city = location.get('name', '') if isinstance(location, dict) else ''
@@ -159,7 +292,10 @@ def normalize_item(item):
         city = address.get('locationName', '')
     year = re.search(r'\b((?:19|20)\d{2})\b', name)
     mileage = re.search(r'([\d\s\u00a0]+)\s*км\b', name)
+    from .date_values import source_datetime
+    published = source_datetime(item.get('sortTimeStamp'))
     return {'platform': 'avito', 'external_id': str(identifier), 'link': link,
+            'published_at': published.isoformat() if published else None,
             'name': name, 'brand': brand, 'model': model, 'price': price,
             'year': year[1] if year else '', 'city': city,
             'image': urljoin('https://www.avito.ru', listing_image(item)) if listing_image(item) else '',

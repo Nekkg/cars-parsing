@@ -5,6 +5,7 @@ networks:
 
 services:
   web:
+    profiles: ["web"]
     build: .
     container_name: ${CONTAINER_PREFIX:-parser}_core
     ports:
@@ -13,8 +14,6 @@ services:
       - .:/app
     depends_on:
       db:
-        condition: service_healthy
-      redis:
         condition: service_healthy
     env_file:
       - .env
@@ -25,13 +24,10 @@ services:
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - POSTGRES_HOST=db
       - POSTGRES_PORT=${POSTGRES_PORT}
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - REDIS_PASSWORD=${REDIS_PASSWORD:-StrongRedisPassword123!}
       - TZ=${TZ:-UTC}
       - WEBSITE_URL=${WEBSITE_URL:-https://example.com}
     command: python manage.py runserver 0.0.0.0:8000
-    restart: unless-stopped
+    restart: "no"
     networks:
       - app_network
     deploy:
@@ -65,29 +61,6 @@ services:
           cpus: '1.0'
           memory: 1G
 
-  redis:
-    image: redis:7
-    container_name: ${CONTAINER_PREFIX:-parser}_redis
-    volumes:
-      - redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-StrongRedisPassword123!}", "ping"]
-      interval: 30s
-      retries: 3
-      start_period: 30s
-      timeout: 10s
-    restart: unless-stopped
-    environment:
-      - TZ=${TZ:-UTC}
-    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-StrongRedisPassword123!} --protected-mode yes
-    networks:
-      - app_network
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 0.5G
-
   bot:
     build:
       context: .
@@ -96,8 +69,6 @@ services:
       - .:/app
     depends_on:
       db:
-        condition: service_healthy
-      redis:
         condition: service_healthy
     env_file:
       - .env
@@ -108,9 +79,6 @@ services:
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - POSTGRES_HOST=db
       - POSTGRES_PORT=${POSTGRES_PORT}
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - REDIS_PASSWORD=${REDIS_PASSWORD:-StrongRedisPassword123!}
       - TZ=${TZ:-UTC}
       - WEBSITE_URL=${WEBSITE_URL:-https://example.com}
     command: python bot/tg_bot.py
@@ -146,21 +114,39 @@ services:
           cpus: '2.0'
           memory: 4G
 
+  avito_proxy:
+    profiles: ["avito-proxy"]
+    image: ghcr.io/sagernet/sing-box:v1.14.2@sha256:afbffd294c5eb3519cc7b4587299ef189bb0a2ca2f667cb6301fdb6b9bce9558
+    command: ["run", "-c", "/etc/sing-box/config.json"]
+    volumes:
+      - ./runtime/sessions/avito-proxy.json:/etc/sing-box/config.json:ro
+    restart: unless-stopped
+    networks:
+      - app_network
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 128M
+
   parsers:
     build:
       context: .
     container_name: ${CONTAINER_PREFIX:-parser}_parsers
     depends_on:
-      - chrome_driver
-      - redis
-      - db
+      chrome_driver:
+        condition: service_started
+      db:
+        condition: service_healthy
+      avito_proxy:
+        condition: service_started
+        required: false
     volumes:
       - .:/app
     env_file:
       - .env
     environment:
       - TZ=${TZ:-UTC}
-      - REDIS_PASSWORD=${REDIS_PASSWORD:-StrongRedisPassword123!}
     command: python -u -m parsers.collector
     restart: unless-stopped
     networks:
@@ -171,44 +157,6 @@ services:
           cpus: '1.0'
           memory: 1G
 
-  ads_sync:
-    profiles: ["legacy"]
-    build:
-      context: .
-    container_name: ${CONTAINER_PREFIX:-parser}_ads_sync
-    depends_on:
-      - redis
-      - db
-      - web
-    volumes:
-      - .:/app
-    env_file:
-      - .env
-    environment:
-      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
-      - POSTGRES_DB=${POSTGRES_DB}
-      - POSTGRES_USER=${POSTGRES_USER}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-      - POSTGRES_HOST=db
-      - POSTGRES_PORT=${POSTGRES_PORT}
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - REDIS_PASSWORD=${REDIS_PASSWORD:-StrongRedisPassword123!}
-      - TZ=${TZ:-UTC}
-      - WEBSITE_URL=${WEBSITE_URL:-https://example.com}
-      - ADS_CLEANUP_DAYS=${ADS_CLEANUP_DAYS:-7}
-      - ADS_SYNC_INTERVAL=${ADS_SYNC_INTERVAL:-60}
-    command: python manage.py run_ads_tasks --cleanup-days=${ADS_CLEANUP_DAYS:-7} --interval=${ADS_SYNC_INTERVAL:-60}
-    restart: unless-stopped
-    networks:
-      - app_network
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 0.5G
-
 volumes:
   avito_browser_profile:
   postgres_data:
-  redis_data:

@@ -52,8 +52,12 @@ class Advertisement(models.Model):
     name = models.CharField(max_length=500)
     brand = models.CharField(max_length=200)
     model = models.CharField(max_length=200)
+    brand_key = models.CharField(max_length=200, blank=True, default='', db_index=True)
+    model_key = models.CharField(max_length=200, blank=True, default='', db_index=True)
     generation = models.CharField(max_length=250, blank=True, default='')
     generation_codes = models.JSONField(default=list, blank=True)
+    generation_key = models.CharField(max_length=300, blank=True, default='', db_index=True)
+    generation_evidence = models.JSONField(default=dict, blank=True)
     last_seen = models.DateTimeField(default=timezone.now)
     year = models.CharField(max_length=20, null=True, blank=True)
     price = models.IntegerField(default=0)
@@ -92,6 +96,10 @@ class Advertisement(models.Model):
         ]
     
     def save(self, *args, **kwargs):
+        from .search import canonical
+        self.brand_key, self.model_key = canonical(self.brand), canonical(self.model)
+        if kwargs.get('update_fields'):
+            kwargs['update_fields'] = set(kwargs['update_fields']) | {'brand_key', 'model_key'}
         # Set created_at with timezone-aware datetime if it's a new object
         if not self.pk:
             self.created_at = timezone.now()

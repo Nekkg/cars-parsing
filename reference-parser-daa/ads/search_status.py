@@ -13,9 +13,9 @@ def coverage_text(counts, source_state):
     for source,count in counts.items():
         state=source_state.get(source,{})
         if state.get('status') == 'доступ ограничен':
-            label='доступ ограничен' + (f' · в базе {count}' if count else '')
+            label=f'доступ ограничен · подходит {count}'
         elif state.get('status') in ('ошибка','восстановление браузера'):
-            label='временно недоступно' + (f' · в базе {count}' if count else '')
+            label=f'временно недоступно · подходит {count}'
         else:
             label=str(count)
         lines.append(f'{SOURCE_NAMES[source]}: {label}')
@@ -33,7 +33,7 @@ def source_responded(state, token):
     return bool(state.get('pages') or state.get('requested_at') == token or state.get('status') in ('ошибка','доступ ограничен'))
 
 
-def status_text(job):
+def status_text(job, counts=None):
     lines=[]
     for source,name in SOURCE_NAMES.items():
         if source not in selected_sources(job.filters):
@@ -45,8 +45,26 @@ def status_text(job):
         # Historical rows can contain Selenium internals; never send raw error strings.
         if status == 'ошибка' and not error: error='Не удалось завершить сбор. Запустите поиск повторно.'
         if status == 'доступ ограничен': error=ERROR_MESSAGES['blocked']
-        line=f'{name}: {status} · сохранено {value.get("count",0) or 0}, страниц {value.get("pages",0) or 0}'
+        line=f'{name}: {status}'
+        if counts is not None:
+            line+=f'\nПо вашим фильтрам в общей базе: {counts.get(source,0)}.'
+        line+=f'\nОбработано записей: {value.get("count",0) or 0}, страниц: {value.get("pages",0) or 0}.'
         if value.get('detail_queue'): line+=f'\nУточняем характеристики: осталось {len(value["detail_queue"])}.'
         if error: line+='\n'+error
         lines.append(line)
     return '\n\n'.join(lines)
+
+
+def current_status_text(job):
+    from collections import Counter
+    from .search import results
+    return status_text(job, Counter(ad.platform for ad in results(job.filters)))
+
+
+def ready_for_batch(state, token, has_matches):
+    """Wait for a first verified match, or a terminal answer from that source."""
+    if has_matches:
+        return True
+    terminal = state.get('requested_at') == token or state.get('status') in (
+        'готово', 'частично', 'лимит страниц', 'ошибка', 'доступ ограничен')
+    return source_responded(state, token) and terminal

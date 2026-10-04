@@ -43,6 +43,9 @@ class AvitoAdapterTests(SimpleTestCase):
         client = AvitoClient.__new__(AvitoClient)
         client.session = Mock()
         client.session.get.return_value.status_code = 429
+        client.session.get.return_value.text = '<title>Access restricted</title>'
+        client.session.get.return_value.iter_content.return_value = iter([b'<title>Access restricted</title>'])
+        client.session.get.return_value.json.return_value = {}
         client.last_request = 0
         client.page_source = 'previous page'
         with patch.object(client, 'load_cookies'):
@@ -89,3 +92,40 @@ class AvitoCollectorIntegrationTests(TestCase):
         job.refresh_from_db()
         self.assertEqual(job.source_state['avito']['requested_at'], job.requested_at.isoformat())
         self.assertEqual(job.source_state['avito']['count'], 25)
+
+
+class AvitoRedirectTests(SimpleTestCase):
+    def make_client(self, responses):
+        client = AvitoClient.__new__(AvitoClient)
+        client.session = Mock()
+        client.session.get.side_effect = responses
+        client.last_request = 0
+        client.page_source = ''
+        client.load_cookies = Mock()
+        return client
+
+    def response(self, content, status=200, headers=None):
+        response = Mock(status_code=status, text=content, headers=headers or {})
+        response.iter_content.return_value = iter([content.encode()])
+        return response
+
+    def test_follows_ssr_canonical_redirect_without_a_browser(self):
+        shell = '<script data-mfe-state="true">' + json.dumps({'loaderData': {'redirect': '/samara/avtomobili/bmw'}}) + '</script>'
+        client = self.make_client([self.response(shell), self.response('<h1>Cars</h1>')])
+        with patch('parsers.avito_client.time.sleep'):
+            client.get('https://www.avito.ru/samara/avtomobili?q=BMW')
+        self.assertEqual(client.session.get.call_args[0][0], 'https://www.avito.ru/samara/avtomobili/bmw')
+        self.assertEqual(client.page_source, '<h1>Cars</h1>')
+
+    def test_redirect_never_forwards_session_to_another_host(self):
+        client = self.make_client([self.response('', 302, {'Location': 'https://example.com/'})])
+        with self.assertRaises(SourceBlocked):
+            client.get('https://www.avito.ru/')
+        client.session.get.assert_called_once()
+
+    def test_credentials_and_wrong_port_are_rejected_before_request(self):
+        for url in ('https://user:pass@www.avito.ru/', 'https://www.avito.ru:444/'):
+            client = self.make_client([])
+            with self.assertRaises(ValueError):
+                client.get(url)
+            client.session.get.assert_not_called()

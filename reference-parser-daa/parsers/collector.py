@@ -1,12 +1,11 @@
-"""One persistent browser per source; bounded searches shared by identical filters."""
+"""Persistent source sessions and shared, bounded collection for active searches."""
 import os
 import time
 import threading
 import logging
 import json
-from pathlib import Path
 from core.paths import DIAGNOSTICS_DIR
-from urllib.request import Request, urlopen
+from urllib.request import Request
 from datetime import timedelta
 os.environ.setdefault('DJANGO_SETTINGS_MODULE','core.settings')
 import django
@@ -24,6 +23,9 @@ from parsers.sources import source_url, extract_listings, enrich, SourceBlocked
 from core.network import source_opener, proxy_setting
 from parsers.browser_session import RecoveringBrowser, session_expired
 from parsers.avito_client import AvitoClient, avito_proxy, http_enabled
+from parsers.fetch_cache import cached_fetch, FetchPending, cleanup_cache
+from parsers.generations import normalize_generation, GenerationIndex
+from parsers.date_values import source_datetime
 
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s')
@@ -54,16 +56,24 @@ def save_ad(ad):
     if not ad.get('price') or not ad.get('name'):
         return False
     key = f"{ad['platform']}:{ad['external_id']}"
-    existing = Advertisement.objects.filter(platform=ad['platform'],link=ad['link']).first()
+    existing = Advertisement.objects.filter(ad_id=key).first() or Advertisement.objects.filter(platform=ad['platform'],link=ad['link']).first()
     fields = {field.name for field in Advertisement._meta.fields} - {'id','ad_id','created_at','published_at'}
     values = {key:value for key,value in ad.items() if key in fields and value is not None}
     for field in Advertisement._meta.fields:
         if field.name in values and field.max_length and isinstance(values[field.name],str):
             values[field.name] = values[field.name][:field.max_length]
+    published = source_datetime(ad.get('published_at'))
+    if published:
+        values['published_at'] = published
     values['last_seen'] = timezone.now()
     if existing:
+        generation_fields = {'generation','generation_codes','generation_key','generation_evidence'}
+        evidence = values.get('generation_evidence',{})
+        if existing.generation_key and not evidence.get('label') and not evidence.get('url'):
+            for field in generation_fields:
+                values.pop(field,None)
         for name,value in values.items():
-            if value != '' and value != []:
+            if value != '' and value != [] or name in generation_fields and evidence:
                 setattr(existing,name,value)
         existing.save()
     else:
@@ -118,31 +128,146 @@ def load_page(driver,source,url):
     return driver.page_source
 
 
+def collection_filters(source, filters):
+    if source != 'avito':
+        return filters
+    # One upstream stream for a city/make/model. Personal constraints stay local.
+    vehicle = {k: v for k, v in filters.get('vehicle', {}).items() if k in ('make', 'model')}
+    shared = {'city': filters.get('city', []), 'vehicle': vehicle}
+    if not vehicle.get('model') and filters.get('variant'):
+        shared['variant'] = filters['variant']
+    return shared
+
+
+def fetch_listing_page(driver, source, url, page):
+    def load():
+        html = load_page(driver, source, url)
+        if source == 'autoru' or (source == 'avito' and not http_enabled()):
+            try:
+                WebDriverWait(driver, 8).until(lambda d: d.find_elements(By.CSS_SELECTOR,
+                    '[data-marker="item"], .ListingItem, [data-seo="listing-item"]'))
+            except TimeoutException:
+                pass
+            html = driver.page_source
+        ads = extract_listings(html, source)
+        generations = GenerationIndex.from_db()
+        for ad in ads:
+            normalize_generation(ad, generations)
+        from bs4 import BeautifulSoup
+        from urllib.parse import urlparse, parse_qs
+        has_next = False
+        for link in BeautifulSoup(html, 'html.parser').select('a[href]'):
+            href = link.get('href', '')
+            query = parse_qs(urlparse(href).query)
+            if 'neighborhood' in query:
+                continue
+            if f'/page{page+1}/' in href or query.get('page') == [str(page+1)] or query.get('p') == [str(page+1)]:
+                has_next = True
+                break
+        if source != 'drom' and ads:
+            has_next = True
+        saved = sum(bool(save_ad(ad)) for ad in ads)
+        return {'ads': ads, 'has_next': has_next, 'saved_count': saved}
+    payload, reused = cached_fetch(source, 'listing', url, load)
+    if reused:
+        generations = GenerationIndex.from_db()
+        for ad in payload['ads']:
+            before = (ad.get('generation'),ad.get('generation_key'),ad.get('generation_evidence'),ad.get('brand'),ad.get('model'))
+            normalize_generation(ad, generations)
+            if before != (ad.get('generation'),ad.get('generation_key'),ad.get('generation_evidence'),ad.get('brand'),ad.get('model')):
+                save_ad(ad)
+    return payload, reused
+
+
+def fetch_ad_details(driver, source, ad, generations):
+    fields = ('brand', 'model', 'city', 'year', 'generation', 'generation_codes',
+              'generation_key', 'generation_evidence', 'mileage', 'engine', 'gearbox', 'owners', 'condition', 'seller',
+              'body_type', 'color', 'drive', 'steering', 'image')
+    def load():
+        enrich(ad, load_page(driver, source, ad['link']), generations)
+        save_ad(ad)
+        return {'details': {field: ad[field] for field in fields if ad.get(field) not in (None, '', [])}}
+    payload, reused = cached_fetch(source, 'detail', ad['link'], load, ttl=3600)
+    if reused:
+        ad.update(payload['details'])
+        normalize_generation(ad, generations)
+        # The current list price remains authoritative; never cache a stale price.
+        save_ad(ad)
+    return ad
+
+
+def pending_details(ads, filters, generations):
+    """Trim the queue locally, including already known nonmatching generations."""
+    from ads.search import matches
+    keys = [f"{ad['platform']}:{ad['external_id']}" for ad in ads]
+    known = {row.ad_id: row for row in Advertisement.objects.filter(ad_id__in=keys)}
+    basic = {k:v for k,v in filters.items() if k in ('price','city','year','brand','platform')}
+    basic['vehicle'] = {k:v for k,v in filters.get('vehicle',{}).items() if k in ('make','model')}
+    generation = filters.get('vehicle',{}).get('generation',{})
+    if not basic.get('year') and (generation.get('year_from') or generation.get('year_to')):
+        basic['year'] = f"{generation.get('year_from') or ''}-{generation.get('year_to') or ''}"
+    queue = []
+    for ad in ads:
+        existing = known.get(f"{ad['platform']}:{ad['external_id']}")
+        if existing:
+            incoming = ad.get('generation_evidence') or {}
+            if not incoming.get('label') and not incoming.get('url') and not ad.get('generation'):
+                ad['generation_evidence'] = existing.generation_evidence
+            for field in ('generation','generation_codes','generation_key','generation_evidence','image','city','year','engine','gearbox',
+                          'owners','condition','seller','body_type','color','drive','steering','mileage'):
+                if ad.get(field) in (None, '', []) and getattr(existing, field) not in (None, '', []):
+                    ad[field] = getattr(existing, field)
+        before = (ad.get('generation'),ad.get('generation_key'),ad.get('generation_evidence'),ad.get('brand'),ad.get('model'))
+        normalize_generation(ad, generations)
+        if before != (ad.get('generation'),ad.get('generation_key'),ad.get('generation_evidence'),ad.get('brand'),ad.get('model')):
+            save_ad(ad)
+        candidate_filters = dict(basic)
+        if not ad.get('city'):
+            candidate_filters.pop('city',None)
+        if not matches(ad,candidate_filters):
+            continue
+        if generation and ad.get('generation_key'):
+            generation_filters = {'vehicle':filters['vehicle']}
+            if not matches(ad,generation_filters):
+                continue
+        if matches(ad,filters) and (ad['platform'] != 'avito' or ad.get('image')):
+            continue
+        queue.append(ad)
+    return queue
+
+
 def collect(driver, source, job):
     """One page per turn: new requests do not wait behind a whole-country crawl."""
     from parsers.query_filters import variants
     from ads.search import matches
     import hashlib
+    from ads.generation_catalog import ensure_generation_catalog
+    ensure_generation_catalog(job.filters)
     state = SearchJob.objects.get(pk=job.pk).source_state.get(source, {})
     token = job.requested_at.isoformat()
-    if state.get('cycle') != token or state.get('requested_at') == token:
+    resumable_block = state.get('error_code') == 'blocked' and (state.get('detail_queue') or not state.get('listing_finished'))
+    if state.get('cycle') != token or state.get('requested_at') == token and not resumable_block:
         state = {'cycle':token, 'route':0, 'next_page':1, 'count':0, 'pages':0, 'fingerprints':[]}
     if state.get('detail_queue'):
-        queue = state['detail_queue']
+        generations = GenerationIndex.from_db()
+        queue = pending_details(state['detail_queue'], job.filters, generations)
+        state['detail_queue'] = queue
         errors = state.get('detail_errors',0)
-        generations = list(CatalogNode.objects.filter(kind='generation'))
+        update_status(job.pk,source,detail_queue=queue,requested_at=None)
+        processed = bool(queue)
         for _ in range(min(3,len(queue))):
             ad = queue[0]
             try:
-                enrich(ad,load_page(driver,source,ad['link']),generations)
-                save_ad(ad)
-            except SourceBlocked:
+                fetch_ad_details(driver, source, ad, generations)
+            except (SourceBlocked, FetchPending):
                 raise
             except Exception as error:
                 if session_expired(error): raise
                 errors += 1
                 logger.warning('%s detail: %s',source,type(error).__name__)
             queue.pop(0)
+            # Persist after each detail: a later block cannot undo this progress.
+            update_status(job.pk,source,detail_queue=queue,detail_errors=errors)
         finished = not queue and state.get('listing_finished')
         update_status(job.pk,source,detail_queue=queue,detail_errors=errors,
             error_code='',attempt_at=token,
@@ -150,55 +275,30 @@ def collect(driver, source, job):
             requested_at=token if finished else None,
             checked_at=timezone.now().isoformat() if finished else None,
             error=f'Не загрузились карточки: {errors}' if errors else '')
-        return
+        if finished or processed:
+            return
     routes = variants(job.filters)
     route = state.get('route',0)
     page = state.get('next_page',1)
     filters = routes[route]
     count = state.get('count',0)
     update_status(job.pk,source,**{**state,'status':'сбор выдачи','error':'','error_code':'','attempt_at':token,'checked_at':None})
-    html = load_page(driver,source,source_url(source,filters,page))
-    if source == 'autoru' or (source == 'avito' and not http_enabled()):
-        try:
-            WebDriverWait(driver,8).until(lambda d: d.find_elements(By.CSS_SELECTOR,
-                '[data-marker="item"], .ListingItem, [data-seo="listing-item"]'))
-        except TimeoutException:
-            pass
-        html = driver.page_source
-    ads = extract_listings(html,source)
+    url = source_url(source, collection_filters(source, filters), page)
+    payload, reused = fetch_listing_page(driver, source, url, page)
+    ads = payload['ads']
     fingerprint = hashlib.sha256('|'.join(sorted(ad['external_id'] for ad in ads)).encode()).hexdigest()
     repeated = fingerprint in state.get('fingerprints',[])
-    generations = list(CatalogNode.objects.filter(kind='generation'))
+    generations = GenerationIndex.from_db()
     needs_details = any(job.filters.get(k) for k in ('engine','gearbox','owners','condition','seller','body_type','color','drive','steering')) or bool(job.filters.get('vehicle',{}).get('generation')) or bool(job.filters.get('city') and any(not ad.get('city') for ad in ads))
     errors = state.get('detail_errors',0)
     if not repeated:
-        for ad in ads:
-            if save_ad(ad): count += 1
+        count += payload['saved_count']
         # Persist listing cards immediately; the bot can serve them during enrichment.
         update_status(job.pk,source,count=count,pages=state.get('pages',0)+1,status='проверка карточек' if needs_details else 'сбор выдачи')
         if needs_details:
-            for ad in ads:
-                basic = {k:v for k,v in job.filters.items() if k in ('price','city','year','brand','platform')}
-                if not ad.get('city'): basic.pop('city',None)
-                if not matches(ad,basic): continue
-                existing = Advertisement.objects.filter(platform=source,link=ad['link']).first()
-                if existing and matches(existing.__dict__,job.filters): continue
-                state.setdefault('detail_queue',[]).append(ad)
+            state.setdefault('detail_queue', []).extend(pending_details(ads, job.filters, generations))
     state['fingerprints'] = (state.get('fingerprints',[]) + [fingerprint])[-100:]
-    # Follow only normal pagination, never the site's neighbouring-city suggestions.
-    from bs4 import BeautifulSoup
-    from urllib.parse import urlparse, parse_qs
-    soup = BeautifulSoup(html,'html.parser')
-    has_next = False
-    for a in soup.select('a[href]'):
-        href=a.get('href','')
-        query=parse_qs(urlparse(href).query)
-        if 'neighborhood' in query: continue
-        if f'/page{page+1}/' in href or query.get('page') == [str(page+1)] or query.get('p') == [str(page+1)]:
-            has_next=True
-            break
-    # Some JS sources omit link pagination. Repeated-page fingerprints stop these.
-    if source != 'drom' and ads: has_next=True
+    has_next = payload['has_next']
     capped = page >= PAGES
     end_route = not ads or repeated or not has_next or capped
     if end_route:
@@ -217,33 +317,44 @@ def collect(driver, source, job):
     logger.info('%s job=%s page=%s saved=%s finished=%s',source,job.pk,page,count,finished)
 
 
+def active_search_jobs():
+    ids = UserFilters.objects.exclude(search_job_id=None).values_list('search_job_id', flat=True)
+    return SearchJob.objects.filter(pk__in=ids).order_by('-requested_at')
+
+
 def worker(source):
     driver = None
     last_runs = {}
     source_block_until = time.monotonic()+saved_backoff_seconds(source)
+    last_cleanup = 0.0
     while True:
         try:
             close_old_connections()
+            if time.monotonic() - last_cleanup > 600:
+                cleanup_cache(source)
+                last_cleanup = time.monotonic()
             if not Parser.objects.filter(name=source,is_active=True).exists():
                 time.sleep(3)
                 continue
             if driver is None and source != 'drom': driver = RecoveringBrowser(lambda: browser(source))
             subscribed = set(UserFilters.objects.filter(user_id__in=User.objects.filter(monitoring_enabled=True).values('user_id')).values_list('search_job_id',flat=True))
-            # One page of each request, newest first; continue all older unfinished searches too.
-            for job in SearchJob.objects.order_by('-requested_at'):
+            # One page per current user search, newest requests first.
+            for job in active_search_jobs():
                 if job.filters.get('platform') and source not in job.filters['platform'] and 'unknown' not in job.filters['platform']: continue
                 state = job.source_state.get(source,{})
-                pending = state.get('requested_at') != job.requested_at.isoformat()
+                pending = state.get('requested_at') != job.requested_at.isoformat() or (state.get('error_code') == 'blocked' and (state.get('detail_queue') or not state.get('listing_finished')))
                 if not pending and job.pk not in subscribed: continue
                 if source_block_until > time.monotonic():
                     if pending:
-                        update_status(job.pk,source,status='доступ ограничен',error_code='blocked',attempt_at=job.requested_at.isoformat(),error='')
+                        update_status(job.pk,source,status='доступ ограничен',error_code='blocked',attempt_at=job.requested_at.isoformat(),error='',retry_after=(timezone.now()+timedelta(seconds=source_block_until-time.monotonic())).isoformat())
                     continue
                 if not pending and time.monotonic()-last_runs.get(job.pk,0) < INTERVAL: continue
                 try:
                     if driver:
                         driver.on_recovery = lambda: update_status(job.pk,source,status='восстановление браузера',error_code='browser_session')
                     collect(driver,source,job)
+                except FetchPending:
+                    continue
                 except Exception as error:
                     from urllib.error import HTTPError
                     blocked = isinstance(error,SourceBlocked) or isinstance(error,HTTPError) and error.code in (403,429)
@@ -257,9 +368,18 @@ def worker(source):
                     update_status(job.pk,source,status='доступ ограничен' if blocked else 'ошибка',
                         error='',error_code='blocked' if blocked else 'filters' if isinstance(error,ValueError) else 'markup' if isinstance(error,RuntimeError) else 'network',
                         retry_after=(timezone.now()+timedelta(minutes=15)).isoformat() if blocked else None,
-                        attempt_at=job.requested_at.isoformat(),requested_at=job.requested_at.isoformat())
+                        attempt_at=job.requested_at.isoformat(),requested_at=None if blocked else job.requested_at.isoformat())
                     logger.warning('%s job=%s %s',source,job.pk,type(error).__name__)
-                    if blocked: source_block_until = time.monotonic()+900
+                    if isinstance(error, SourceBlocked):
+                        # These messages are controlled by our code, without response bodies/tokens.
+                        logger.warning('%s access check: %s', source, str(error))
+                    if blocked:
+                        source_block_until = time.monotonic()+900
+                        if source == 'avito' and http_enabled() and driver:
+                            # A rejected session is discarded once; retry only after the cooldown.
+                            try: driver.quit()
+                            except Exception: pass
+                            driver = None
                 last_runs[job.pk] = time.monotonic()
                 # Re-read newest jobs between pages.
             time.sleep(2)

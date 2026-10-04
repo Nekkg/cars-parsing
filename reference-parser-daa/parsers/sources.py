@@ -49,7 +49,7 @@ def check_block(soup, source):
     title = soup.title.get_text(' ', strip=True) if soup.title else ''
     beginning = soup.get_text(' ', strip=True)[:1800].lower()
     if any(word in beginning for word in ('доступ ограничен', 'подтвердите, что вы не робот', 'подтвердите, что вы человек', 'пройдите проверку', 'smartcaptcha')):
-        raise SourceBlocked(f'{source}: ограничение доступа/капча. Откройте браузер проверки на http://localhost:7900/ (пароль secret).')
+        raise SourceBlocked(f'{source}: access restricted')
     if 'captcha' in title.lower():
         raise SourceBlocked(f'{source}: капча, требуется ручная проверка браузера.')
 
@@ -86,6 +86,15 @@ def extract_listings(html, source):
         if image and image.get('srcset'):
             ad['image'] = image['srcset'].split(',')[-1].strip().split(' ')[0]
         if ad['image'].startswith('//'): ad['image'] = 'https:' + ad['image']
+        if source == 'avito':
+            # SVG/loading placeholders and seller avatars are not car photographs.
+            ad['image'] = ''
+            for candidate in card.select('img[src]'):
+                candidate_url = candidate.get('src', '')
+                host = urlparse(candidate_url).hostname or ''
+                if urlparse(candidate_url).scheme == 'https' and host.endswith('.img.avito.st'):
+                    ad['image'] = candidate_url
+                    break
         ad['city'] = text(card, '[data-ftid="bull_location"], [data-marker="item-address"], [data-marker="item-location"], [itemprop="addressLocality"], [class*="geo-root"], .MetroListPlace__regionName, .ListingItem__place')
         if source == 'drom':
             parts = urlparse(link).path.strip('/').split('/')
@@ -97,17 +106,21 @@ def extract_listings(html, source):
             if ad['brand'] == 'mercedes':
                 ad['brand'] = 'mercedes-benz'
                 ad['model'] = ad['model'].replace('_klasse','-class')
-            generation = re.search(r'\b[IVX]+\s*\([^)]*\)(?:\s*Рестайлинг)?',title,re.I)
-            if generation:
-                ad['generation'] = generation[0]
-                codes = re.search(r'\(([^)]*)\)',generation[0])
-                ad['generation_codes'] = [code.strip() for code in re.split(r'[,/]',codes[1]) if code.strip()]
+            from .generations import title_generation
+            ad['generation'] = title_generation(title)
+            codes = re.search(r'\(([^)]*)\)', ad['generation'])
+            if codes and not re.search(r'(?:19|20)\d{2}', codes[1]):
+                ad['generation_codes'] = [code.strip() for code in re.split(r'[,/]', codes[1]) if code.strip()]
         else:
-            stem = re.split(r',\s*(?:19|20)\d{2}',title)[0]
-            parts = stem.split(' ',1)
-            ad['brand'], ad['model'] = (parts+[''])[:2]
+            from .avito_client import vehicle_name
+            ad['brand'], ad['model'] = vehicle_name(title)
         mileage = re.search(r'([\d\s\u00a0]+)\s*км\b',card.get_text(' ',strip=True))
         ad['mileage'] = number(mileage[1]) if mileage else None
+        from .date_values import source_datetime
+        stamp = card.select_one('time[datetime], [itemprop=datePosted][content]')
+        published = source_datetime(stamp.get('datetime') or stamp.get('content')) if stamp else None
+        if published:
+            ad['published_at'] = published.isoformat()
         ads.append(ad)
     if not cards:
         if source == 'autoru' and soup.select_one('.ListingEmptyOffers'):
@@ -127,6 +140,15 @@ def enrich(ad, html, generations=()):
     check_block(soup, ad['platform'])
     if ad['platform'] == 'avito':
         ad['city'] = text(soup,'[itemprop="addressLocality"], [data-marker="item-view/item-address"], [data-marker="item-view/location"], [data-marker="item-address"]') or ad.get('city','')
+    if ad['platform'] == 'avito' and not ad.get('image'):
+        gallery = soup.select_one('[data-marker="item-view/main-gallery"]')
+        if gallery:
+            for image in gallery.select('img[src]'):
+                image_url = image.get('src', '')
+                parsed_image = urlparse(image_url)
+                if parsed_image.scheme == 'https' and (parsed_image.hostname or '').endswith('.img.avito.st'):
+                    ad['image'] = image_url
+                    break
     specs = {}
     for row in soup.select('tr[data-ftid^="specification"], li[class*="CardInfoRow"], li[class*="CardInfoGroupedRow"], [data-marker="item-view/item-params"] li'):
         cells = row.select('th, td') or row.select('div[class*="cellTitle"], div[class*="cellValue"]')
@@ -155,17 +177,7 @@ def enrich(ad, html, generations=()):
         year = re.search(r'\b((?:19|20)\d{2})\b',ad['name'])
         ad['year'] = year[1] if year else None
     generation_link = soup.select_one('[data-ftid="specification-generation"] a')
-    # Exact catalogue links take priority over a body code shared by a facelift.
-    generations = sorted(generations, key=lambda gen: not (generation_link and generation_link.get('href') in gen.data.get('generation_urls', [])))
-    for gen in generations:
-        known_url = generation_link and generation_link.get('href') in gen.data.get('generation_urls', [])
-        # Only search the actual generation attribute, never advertisements or spare-parts banners.
-        code_match = any(re.search(r'(?<!\w)'+re.escape(code)+r'(?!\w)',ad.get('generation',''),re.I)
-                         for code in gen.data.get('codes', []))
-        if known_url or code_match:
-            ad['generation_codes'] = gen.data.get('codes', [])
-            if known_url:
-                ad['generation'] = gen.name
-            break
+    from .generations import normalize_generation
+    normalize_generation(ad, generations, generation_link.get('href') if generation_link else None)
     ad['gearbox'] = 'автомат' if ad.get('gearbox','').lower() == 'акпп' else ad.get('gearbox','')
     return ad

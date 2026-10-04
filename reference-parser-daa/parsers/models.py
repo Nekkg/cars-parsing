@@ -18,3 +18,12 @@ class Parser(models.Model):
     @classmethod
     async def get_active_parsers(cls):
         return await sync_to_async(list)(cls.objects.filter(is_active=True))
+
+
+class SourceFetch(models.Model):
+    """Shared normalized results, never browser profiles or raw challenge HTML."""
+    key = models.CharField(max_length=64, primary_key=True)
+    source = models.CharField(max_length=20)
+    payload = models.JSONField(default=dict)
+    expires_at = models.DateTimeField(db_index=True)
+    lease_until = models.DateTimeField(null=True, blank=True)

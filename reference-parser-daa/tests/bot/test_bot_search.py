@@ -125,3 +125,44 @@ class CollectionTests(TestCase):
         self.assertEqual(job.source_state['drom']['count'],5)
         self.assertEqual(job.source_state['drom']['status'],'готово')
         self.assertEqual(Advertisement.objects.count(),5)
+
+class FirstSourceBatchTests(SimpleTestCase):
+    async def render(self, ads, page=0, data=None):
+        from bot.handlers.vehicle_search import show_results
+        message, state = AsyncMock(), AsyncMock()
+        state.get_data.return_value = data or {}
+        filters = SimpleNamespace(sort_order='newest',platform=[],search_job_id=None)
+        with patch('bot.handlers.vehicle_search.UserFilters.objects.aget_or_create',AsyncMock(return_value=(filters,False))), patch('bot.handlers.vehicle_search.current_results',AsyncMock(return_value=ads)), patch('bot.handlers.vehicle_search.user_description',AsyncMock(return_value='Volvo S60')), patch('bot.handlers.vehicle_search.send_card',AsyncMock()) as send:
+            await show_results(message,1,page=page,state=state)
+        return message, state, send
+
+    async def test_auto_batch_sends_exactly_one_from_each_source_in_fixed_order(self):
+        ads = [SimpleNamespace(pk=i,platform=s) for i,s in enumerate(['drom','avito','drom','autoru','avito'],1)]
+        message, state, send = await self.render(ads)
+        self.assertEqual([c.args[1].platform for c in send.await_args_list],['avito','autoru','drom'])
+        self.assertEqual(send.await_count,3)
+        self.assertEqual(state.update_data.await_args.kwargs['result_first_size'],3)
+        buttons = message.answer.await_args.kwargs['reply_markup'].inline_keyboard
+        self.assertEqual(sum(b.callback_data=='search:page:1' for row in buttons for b in row),1)
+
+    async def test_unavailable_sources_do_not_fill_first_batch_with_duplicates(self):
+        ads = [SimpleNamespace(pk=i,platform='drom') for i in range(1,4)]
+        message, state, send = await self.render(ads)
+        self.assertEqual(send.await_count,1)
+        self.assertEqual(state.update_data.await_args.kwargs['result_first_size'],1)
+        _, _, next_send = await self.render(ads,page=1,data={'result_ids':[1,2,3],'result_first_size':1})
+        self.assertEqual([c.args[1].pk for c in next_send.await_args_list],[2,3])
+
+    async def test_empty_results_have_no_next_batch_button(self):
+        message, _, send = await self.render([])
+        send.assert_not_awaited()
+        buttons = message.answer.await_args.kwargs['reply_markup'].inline_keyboard
+        self.assertFalse(any(b.callback_data=='search:page:1' for row in buttons for b in row))
+
+    def test_pending_generation_waits_for_first_verified_source_match(self):
+        from ads.search_status import ready_for_batch
+        pending = {'cycle':'token','pages':1,'status':'проверка карточек','detail_queue':[{}]}
+        self.assertFalse(ready_for_batch(pending,'token',False))
+        self.assertTrue(ready_for_batch(pending,'token',True))
+        self.assertTrue(ready_for_batch({**pending,'status':'доступ ограничен'},'token',False))
+        self.assertFalse(ready_for_batch({**pending,'status':'доступ ограничен'},'other-token',False))

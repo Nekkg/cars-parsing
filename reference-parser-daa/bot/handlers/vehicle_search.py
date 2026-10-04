@@ -14,8 +14,8 @@ from asgiref.sync import sync_to_async
 from ads.catalog import load_children, vehicle_path
 from ads.catalog_search import ranked_rows
 from ads.models import CatalogNode, SearchJob
-from ads.search import request_search, results, snapshot, SORT_LABELS
-from ads.search_status import status_text, selected_sources, source_responded, SOURCE_NAMES
+from ads.search import request_search, results, snapshot, SORT_LABELS, result_order, result_page
+from ads.search_status import current_status_text, selected_sources, ready_for_batch, SOURCE_NAMES
 from ads.filter_values import bounds, range_label, describe, parse_price_amount
 from users.models import UserFilters, User
 
@@ -209,6 +209,9 @@ async def catalog_callback(callback, state: FSMContext):
 def start_search(user_id):
     User.objects.filter(user_id=user_id).update(monitoring_enabled=False)
     filters, _ = UserFilters.objects.get_or_create(user_id=user_id)
+    if filters.sort_order != 'newest':
+        filters.sort_order = 'newest'
+        filters.save(update_fields=['sort_order'])
     User.objects.get_or_create(user_id=user_id)
     return request_search(filters).pk
 
@@ -245,30 +248,36 @@ async def send_card(message, ad):
 async def show_results(message, user_id, page=0, state=None):
     ads = await current_results(user_id)
     filters, _ = await UserFilters.objects.aget_or_create(user_id=user_id)
-    # Freeze the page order while new listings arrive; explicit refresh rebuilds it.
+    counts = {source:sum(getattr(ad,'platform',None) == source for ad in ads) for source in selected_sources({'platform':filters.platform})}
+    total = len(ads)
+    ads, first_size = result_order(ads, list(counts), filters.sort_order)
+    # Explicit refresh/sort rebuilds the snapshot; subsequent pages stay stable.
     if state:
         data = await state.get_data()
         if page == 0 or not data.get('result_ids'):
-            await state.update_data(result_ids=[ad.pk for ad in ads])
+            await state.update_data(result_ids=[ad.pk for ad in ads], result_first_size=first_size)
         else:
             by_id = {ad.pk:ad for ad in ads}
             ads = [by_id[pk] for pk in data['result_ids'] if pk in by_id]
+            first_size = data.get('result_first_size', 3)
     page = max(0,page)
-    for ad in ads[page*3:(page+1)*3]:
+    batch = result_page(ads, first_size, page)
+    for ad in batch:
         await send_card(message,ad)
     buttons=[]
-    if (page+1)*3 < len(ads):
+    consumed = first_size + page * 3
+    if consumed < len(ads):
         buttons.append([Button(text='Ещё 3 машины →',callback_data=f'search:page:{page+1}')])
     buttons.append([Button(text='Обновить результаты',callback_data='search:page:0'),
                     Button(text='Статус сбора',callback_data='search:status')])
     buttons.append([Button(text=('✓ ' if filters.sort_order == key else '') + label,
                            callback_data=f'search:sort:{key}') for key,label in [('newest','Новые'),('cheap','Дешевле'),('expensive','Дороже')]])
-    counts = {source:sum(getattr(ad,'platform',None) == source for ad in ads) for source in selected_sources({'platform':filters.platform})}
     job = await SearchJob.objects.filter(pk=filters.search_job_id).afirst() if filters.search_job_id else None
     from ads.search_status import coverage_text
     coverage = coverage_text(counts,job.source_state if job else {})
     await message.answer(escape(await user_description(user_id)) +
-        f'\n\nОбщая выдача: <b>{len(ads)}</b>. {SORT_LABELS.get(filters.sort_order,SORT_LABELS["newest"])}.\n{coverage}\n'
+        f'\n\nВ общей базе по вашим фильтрам: <b>{total}</b>. {SORT_LABELS.get(filters.sort_order,SORT_LABELS["newest"])}.\n{coverage}\n' +
+        ('Первая подборка — по одной машине с каждой доступной площадки.\n' if page == 0 and filters.sort_order == 'newest' and batch else '') +
         'Сбор может продолжаться — обновляйте результаты.',
         reply_markup=Keyboard(inline_keyboard=buttons))
 
@@ -290,7 +299,7 @@ async def run_search_once(message,user_id,state):
     job_id = await start_search(user_id)
     job = await SearchJob.objects.aget(pk=job_id)
     progress = await message.answer(escape(await user_description(user_id)) +
-        '\n\n🔎 Ищу объявления на площадках. Первые 3 покажу автоматически.')
+        '\n\n🔎 Ищу объявления на площадках. Покажу до 3 машин: по одной с Avito, Auto.ru и Дрома.')
     # Keep handlers asynchronous: other users and callbacks continue working.
     for tick in range(60):
         current = await UserFilters.objects.filter(user_id=user_id).afirst()
@@ -299,9 +308,10 @@ async def run_search_once(message,user_id,state):
         if latest.requested_at != job.requested_at: return
         ads = await current_results(user_id)
         sources = selected_sources(job.filters)
-        responded = all(source_responded(latest.source_state.get(s,{}),job.requested_at.isoformat()) for s in sources)
+        represented = {ad.platform for ad in ads}
+        responded = all(ready_for_batch(latest.source_state.get(s,{}),job.requested_at.isoformat(),s in represented) for s in sources)
         if ads and (responded or tick >= 30):
-            await progress.edit_text('Найдены подходящие объявления. Показываю первые 3; новые добавляются по мере сбора.')
+            await progress.edit_text('Найдены подходящие объявления. Показываю по одной машине с доступных площадок; новые добавляются по мере сбора.')
             if not responded:
                 await message.answer('Часть площадок ещё отвечает. Пока показываю доступные результаты общей базы.')
             await show_results(message,user_id,state=state)
@@ -355,4 +365,4 @@ async def show_status(message,user_id):
         await message.answer('Сначала выберите автомобиль через /car и запустите /search.')
         return
     job = await SearchJob.objects.aget(pk=filters.search_job_id)
-    await message.answer(escape(status_text(job)))
+    await message.answer(escape(await sync_to_async(current_status_text)(job)))

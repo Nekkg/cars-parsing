@@ -9,16 +9,12 @@ import django
 django.setup()
 
 import asyncio
-import json
-import redis.asyncio as redis
 from aiogram import Bot
 from aiogram.exceptions import TelegramForbiddenError, TelegramRetryAfter
 from asgiref.sync import sync_to_async
 from django.db import close_old_connections
 
-from users.models import UserFilters, User  # Импортируй свою модель
-from utils import check_filters  # Функция для проверки фильтров
-from config import REDIS_HOST, REDIS_PORT, REDIS_PASSWORD
+from users.models import User
 from services.remove_user_service import remove_user_from_db
 from ads.models import Delivery
 from ads.search import results, snapshot
@@ -41,76 +37,6 @@ TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 bot = Bot(token=TOKEN, session=telegram_session())
 
 
-async def get_all_ads(redis_client: redis.Redis):
-    """Получает все объявления из Redis."""
-    ad_keys = await redis_client.keys("*")
-    ads = {}
-    for ad_id in ad_keys:
-        key_type = await redis_client.type(ad_id)
-        if key_type != "string":
-            continue  # Пропускаем нестроковые ключи
-        ad_data = await redis_client.get(ad_id)
-        if ad_data:
-            try:
-                ads[ad_id] = ad_data  # Сохраняем данные как есть
-            except json.JSONDecodeError:
-                logging.error(f"Ошибка декодирования JSON для объявления {ad_id}")
-    return ads
-
-
-async def send_ads_by_filters(redis_client: redis.Redis):
-    """Отправляет объявления пользователям по их фильтрам."""
-    ads = await get_all_ads(redis_client)
-    logging.info(f"Найдено {len(ads)} объявлений")
-    if not ads:
-        return
-
-    users_monitoring_enabled = await sync_to_async(list)(User.objects.filter(monitoring_enabled=True))
-    users = await sync_to_async(list)(UserFilters.objects.all())
-    checked_ads = await redis_client.smembers("ads:checked")
-
-    for ad_id, ad_data in ads.items():
-        if ad_id in checked_ads:
-            continue  # Пропускаем уже обработанное объявление
-
-        try:
-            ad = json.loads(ad_data)
-        except json.JSONDecodeError as e:
-            logging.error(f"Ошибка декодирования JSON для объявления {ad_id}: {e}, данные: {ad_data!r}")
-            continue  # Пропускаем это объявление и переходим к следующему
-
-        for user in users:
-            if user.user_id in [u.user_id for u in users_monitoring_enabled]:
-                filters = {
-                    "platform": user.platform,
-                    "price": user.price,
-                    "brand": user.brand,
-                    "engine": user.engine,
-                    "mileage": user.mileage,
-                    "gearbox": user.gearbox,
-                    "owners": user.owners,
-                    "condition": user.condition,
-                    "seller": user.seller,
-                    "city": user.city,
-                    "year": user.year,
-                    "body_type": user.body_type,
-                    "color": user.color,
-                    "drive": user.drive,
-                    "steering": user.steering,
-                    "ad_type": user.ad_type,
-                }
-                if check_filters(ad, filters):
-                    await send_ad_to_user(user.user_id, ad)
-                    logging.info(f"Отправлено объявление {ad_id} пользователю {user.user_id}")
-
-        # После обработки добавляем объявление в "проверенные"
-        await redis_client.sadd("ads:checked", ad_id)
-
-
-import logging
-from core.paths import BOT_LOG_FILE
-
-# Вспомогательные функции для экранирования и оформления MarkdownV2
 def escape_md_v2(text: str) -> str:
     """
     Экранирует все спецсимволы, требуемые MarkdownV2.

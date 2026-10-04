@@ -1,75 +1,91 @@
-# Avito collector
+# Сбор Avito
 
-The bot uses its existing shared database, filter matcher and pagination. Only
-the Avito transport/structured catalogue reader changes. It never starts a
-second Telegram bot or sends a separate stream of notifications.
+Работает внутри общего сборщика бота и сохраняет объявления в PostgreSQL.
+Сторонние API и сервисы cookies не подключены. Десктопный браузер удалён.
 
-Reference reviewed: https://github.com/Duff89/parser_avito at
-`91a5399f79bf035d3eb919d66ada00545571c2f1`. Our adapter is independently written;
-the reference repository is not vendored or a nested Git dependency.
-The reference uses curl_cffi, catalogue JSON and cookie/proxy providers. Its
-current mobile API URL conversion depends on SPFA; that paid/external cookie
-workflow is NOT enabled here. This adapter reads the public listing page's
-embedded catalogue JSON and falls back to the existing HTML card reader.
-
-## Local .env settings
+## Транспорт
 
 ```dotenv
 AVITO_TRANSPORT=http
-# Optional dedicated proxy for Avito; omitted = SOURCES_PROXY_URL.
-# An explicitly empty value means direct access.
-# AVITO_PROXY_URL=http://username:password@host:port
-# Optional export of your own browser cookies, stored only locally.
-# AVITO_COOKIES_FILE=runtime/diagnostics/avito_cookies.json
-```
-
-Cookies may be a browser-exported JSON list, a name/value object, or an object
-with a `cookies` member. Only Avito-domain cookies are loaded from a list.
-The file reloads when modified. Never commit or send this file or proxy passwords.
-Cookies do not guarantee access when the IP itself is blocked.
-
-The HTTP session uses the dedicated Avito route, at least five seconds between
-requests, no automatic retry on HTTP 403/429/439, and the collector's existing
-15-minute backoff. Telegram and other sources retain their own routes.
-To use the Selenium/manual browser workflow instead set `AVITO_TRANSPORT=browser`.
-Changing .env requires recreating the parsers service:
-
-```powershell
-docker --context desktop-linux compose up -d --no-deps --build parsers
-```
-
-The browser route also uses AVITO_PROXY_URL. HTTP cookie file loading applies
-only to the HTTP transport. Source image downloading still uses SOURCES_PROXY_URL.
-
-## Verification
-
-```powershell
-docker --context desktop-linux compose exec -T parsers python manage.py test tests.parsers.test_avito_client tests.ads.test_search tests.bot.test_notification_limits
-```
-
-On the current connection, the live test returned HTTP 429 and the page title
-`Доступ ограничен: проблема с IP`. No live ads were obtained in that test.
-The adapter tests use synthetic response data and do not establish live access.
-An accessible connection/session remains necessary; changing parsers alone does
-not resolve an IP restriction. No paid services have been activated.
-
-
-# Прямое подключение Avito
-
-Avito использует домашнее подключение через прямой локальный порт Karing:
-
-```dotenv
-AVITO_TRANSPORT=http
+# Выберите свой доступный маршрут; пустое значение — прямое подключение.
 AVITO_PROXY_URL=http://host.docker.internal:3065
+# Необязательный профиль curl_cffi; по умолчанию firefox147.
+# AVITO_HTTP_PROFILE=firefox147
 ```
 
-Порт `3065` направлен в `direct_out`, порт Telegram `3066` использует VPN.
-Проверка подтвердила совпадение IP прямого порта Karing с прямым выходом Windows.
-При этом прямое соединение из Docker без указания прокси использовало другой IP,
-поэтому для Avito явно задан прямой порт Karing. Karing должен оставаться запущенным.
+Маршрут Telegram задаётся отдельно. HTTP-клиент не наследует системные настройки
+VPN/прокси. При необходимости собственные cookies можно загрузить через
+`AVITO_COOKIES_FILE`; файл должен оставаться локальным и не попадать в Git.
 
-На момент проверки 2 октября 2026 года Avito через прямой выход Windows вернул
-HTTP 429 и страницу «Доступ ограничен: проблема с IP». Объявления не получены.
-Сборщик сохраняет статус ограничения и делает паузу вместо непрерывных повторов.
+## Проверки и ограничения
 
-Сторонний API-сервис отключён и его код удалён. Новые сервисы не используются.
+Клиент следует только HTTPS-перенаправлениям на Avito, включая перенаправления
+в JSON внутри HTML. PoW распознаётся в JSON или в HTML с cookie `pow_challenge`:
+запрос задания → ограниченное вычисление SHA256 → подтверждение сервером →
+повтор исходного запроса с тем же городом, моделью и номером страницы.
+Все шаги используют один маршрут и cookie jar.
+
+Пределы: два PoW-прохода за загрузку, до 8 секунд вычислений, 2 млн вариантов
+nonce, 90 секунд общей загрузки и 10 МБ HTML. Между HTTP-запросами — минимум
+5 секунд; при обрыве GET повторяется один раз. Уже полностью полученный HTML
+может быть принят после ошибки завершения соединения; усечённый ответ отвергается.
+Подтверждение принимается только при `verified=true`, а не просто при HTTP 200.
+
+GeeTest распознаётся по полному набору маркеров страницы, а не по её заголовку.
+Локальный MIT-решатель поддерживает ползунок, ai и invisible. Он загружает
+картинки штатной проверки, вычисляет решение и принимает результат только после
+подтверждения GeeTest и Avito. Один GeeTest-проход за загрузку; картинки до 2 МБ
+и 1 млн пикселей; вычисления PoW внутри GeeTest также ограничены. Разрешены только
+конкретные HTTPS-адреса провайдера, без исполнения JavaScript и сторонних решателей.
+
+Другие виды капчи и отдельный Qrator fingerprint пока не поддерживаются.
+Ограничение IP остаётся отдельной причиной отказа. Cookies, токены и полные
+ответы проверки не пишутся в логи. Вендорный MIT-код, лицензия и описание наших
+изменений находятся в `parsers/vendor/geekedtest/`.
+
+Общая выдача Avito собирается по городу/марке/модели, а личные ограничения
+пользователей применяются к общей базе. Одновременные одинаковые страницы
+объединяются; кеш выдачи — 120 секунд, характеристик карточки — 1 час.
+Ошибки и проверки не кешируются как пустая выдача. При блокировке — пауза 15 минут.
+
+## Источники и проверка
+
+Самостоятельная реализация протокола по исследованию
+[mickberrad659-sketch/Avito-Parser](https://github.com/mickberrad659-sketch/Avito-Parser),
+коммит `2d09315ead7ef1b3498415474f690eea512cf571` (проверен 04.10.2026),
+и по ответам самого Avito. Корневой код без лицензии не включён как зависимость; использована только MIT-часть GeekedTest.
+Структурированный каталог также изучен по Duff89/parser_avito,
+коммит `91a5399f79bf035d3eb919d66ada00545571c2f1`.
+
+```powershell
+docker compose exec -T bot python manage.py test tests --noinput
+```
+
+Синтетические тесты проверяют протокол, фильтры и пределы; фактический доступ
+проверяется отдельно на свежих объявлениях. Положительный PoW-ответ сам по себе
+не доказывает устойчивый доступ к каталогу.
+## Живая проверка 04.10.2026
+
+Через собственный московский узел получены две разные страницы BMW X1 в Самаре:
+50 + 8 объявлений, все с фото; 32 объявления совпали с городом. Соседние города,
+которые добавляет сама площадка, отсекаются нашим фильтром.
+
+После переноса маршрута в Docker общий сборщик сохранил страницу из 50 объявлений
+для текущего фильтра и успешно уточнил поколение карточки. Дополнительная живая
+проверка GeeTest была принята провайдером и Avito; после неё вторая страница
+вернула ещё 50 карточек с фото. Скачивание фотографии проверено: JPEG для Telegram.
+Эти результаты подтверждают доступ на текущем маршруте, а не универсальный обход
+всех возможных защит. Периодическая смена правил площадки может потребовать обновлений.
+
+Проверка Volvo S60: каталог вернул 50 карточек, отдельное объявление — поколение
+`I (2000—2004)`. Оно сопоставляется с P24 через общий каталог модели. На Auto.ru
+римское обозначение в заголовке также учитывается, включая отдельные рестайлинги.
+Сборщик исключает заведомо неподходящие машины из очереди подробностей и сохраняет
+прогресс после каждой карточки. Незавершённая очередь после блокировки автоматически
+продолжается после паузы, без сброса уже обработанных страниц.
+
+Для пересопоставления явных поколений в существующей базе без сетевых запросов:
+
+```powershell
+docker compose exec -T bot python manage.py normalize_generations --apply
+```

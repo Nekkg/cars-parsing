@@ -2,12 +2,13 @@ from pathlib import Path
 from dotenv import load_dotenv
 import os
 
-load_dotenv(encoding='utf-8')
+load_dotenv(Path(__file__).resolve().parent.parent / '.env', encoding='utf-8')
+from core.config import required_env, env_port
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-SECRET_KEY = os.getenv('DJANGO_SECRET_KEY')
+SECRET_KEY = required_env('DJANGO_SECRET_KEY')
 
 DEBUG = os.getenv('DEBUG', 'False').lower() in ('true', '1', 'yes')
 
@@ -67,9 +68,9 @@ DATABASES = {
         'ENGINE': 'django.db.backends.postgresql',
         'NAME': os.getenv('POSTGRES_DB', 'default_db_name'),
         'USER': os.getenv('POSTGRES_USER', 'default_user'),
-        'PASSWORD': os.getenv('POSTGRES_PASSWORD', 'default_password'),
+        'PASSWORD': required_env('POSTGRES_PASSWORD'),
         'HOST': os.getenv('POSTGRES_HOST', 'db'),
-        'PORT': os.getenv('POSTGRES_PORT', '5432'),
+        'PORT': env_port('POSTGRES_PORT', 5432),
     }
 }
 
