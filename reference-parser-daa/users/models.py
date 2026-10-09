@@ -1,4 +1,5 @@
 from django.db import models
+from django.utils import timezone
 from django.contrib.postgres.fields import ArrayField
 
 class User(models.Model):
@@ -17,6 +18,10 @@ class User(models.Model):
 
 
 class UserFilters(models.Model):
+    generation_keys = models.JSONField(default=list, blank=True)
+    generation_hint = models.CharField(max_length=100,blank=True,default='')
+    radius_km = models.PositiveSmallIntegerField(default=0)
+    location = models.JSONField(default=dict,blank=True)
     variant = models.CharField(max_length=100, blank=True, default='')
     sort_order = models.CharField(max_length=20, default='newest')
     vehicle = models.ForeignKey('ads.CatalogNode', null=True, blank=True, on_delete=models.SET_NULL)
@@ -45,3 +50,42 @@ class UserFilters(models.Model):
 
     def __str__(self):
         return f"Фильтры пользователя {self.user_id}"
+
+class TrackedSearch(models.Model):
+    """A saved query independent of the user's current search form."""
+    INTERVALS = (1, 2, 5, 10, 30)
+    user_id = models.BigIntegerField(db_index=True)
+    chat_id = models.BigIntegerField()
+    fingerprint = models.CharField(max_length=64)
+    filters = models.JSONField(default=dict)
+    search_job = models.ForeignKey('ads.SearchJob', on_delete=models.PROTECT)
+    interval_minutes = models.PositiveSmallIntegerField(default=5, choices=[(n, f'{n} мин') for n in INTERVALS])
+    enabled = models.BooleanField(default=True)
+    created_at = models.DateTimeField(default=timezone.now)
+    started_at = models.DateTimeField()
+    next_check_at = models.DateTimeField()
+    last_check_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['user_id', 'fingerprint'], name='unique_user_tracked_query'),
+            models.CheckConstraint(condition=models.Q(interval_minutes__in=(1, 2, 5, 10, 30)), name='valid_tracking_interval'),
+        ]
+        indexes = [models.Index(fields=['enabled', 'next_check_at'])]
+
+
+class TrackingDelivery(models.Model):
+    """Durable outbox: overlapping saved queries notify each user only once per ad."""
+    user_id = models.BigIntegerField()
+    chat_id = models.BigIntegerField()
+    subscription = models.ForeignKey(TrackedSearch, null=True, on_delete=models.SET_NULL)
+    advertisement = models.ForeignKey('ads.Advertisement', on_delete=models.CASCADE)
+    created_at = models.DateTimeField(default=timezone.now)
+    sent_at = models.DateTimeField(null=True, blank=True)
+    lease_until = models.DateTimeField(null=True, blank=True)
+    next_attempt_at = models.DateTimeField()
+    attempts = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['user_id', 'advertisement'], name='unique_tracking_user_ad')]
+        indexes = [models.Index(fields=['user_id', 'sent_at']), models.Index(fields=['sent_at', 'next_attempt_at'])]

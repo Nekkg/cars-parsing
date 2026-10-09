@@ -8,7 +8,7 @@ from django.test import SimpleTestCase
 
 from parsers.avito_client import AvitoClient
 from parsers.avito_pow import MAX_COMPLEXITY, pow_challenge, solution
-from parsers.sources import SourceBlocked
+from parsers.sources import SourceBlocked, SourceTemporaryError
 
 
 def token(payload):
@@ -33,6 +33,19 @@ class AvitoPowTests(SimpleTestCase):
         client.load_cookies = Mock()
         return client
 
+    def test_endpoint_server_errors_are_not_access_blocks(self):
+        from parsers.avito_pow import result
+        from parsers.avito_captcha import result as captcha_result
+        from parsers.sources import SourceUnavailable
+        for helper in (result, captcha_result):
+            for code in (500, 502, 503):
+                with self.assertRaises(SourceUnavailable) as caught:
+                    helper(response(code))
+                self.assertNotIsInstance(caught.exception, SourceBlocked)
+                self.assertEqual(caught.exception.status, code)
+            for code in (403, 429):
+                with self.assertRaises(SourceBlocked):helper(response(code))
+
     def test_nonce_satisfies_protocol(self):
         jwt = token({'id': 'synthetic', 'compl': 2})
         work = solution(jwt)
@@ -47,7 +60,7 @@ class AvitoPowTests(SimpleTestCase):
                 solution(token(payload))
         with self.assertRaises(SourceBlocked):
             solution('malformed')
-        with self.assertRaises(SourceBlocked):
+        with self.assertRaises(SourceTemporaryError):
             solution(token({'id':'test', 'compl':2}), seconds=0)
 
     def test_html_challenge_uses_only_applicable_cookie(self):
@@ -98,7 +111,7 @@ class AvitoPowTests(SimpleTestCase):
 
     def test_expired_deadline_makes_no_request(self):
         client = self.make_client()
-        with self.assertRaises(SourceBlocked):
+        with self.assertRaises(SourceTemporaryError):
             client.request('get', 'https://www.avito.ru/', deadline=0)
         client.session.get.assert_not_called()
 
@@ -137,7 +150,7 @@ class AvitoStreamTests(SimpleTestCase):
             raise ConnectionError('synthetic disconnect')
         document.iter_content.side_effect = interrupted
         client.session.get.return_value = document
-        with patch('parsers.avito_client.time.sleep'), self.assertRaises(ConnectionError):
+        with patch('parsers.avito_client.time.sleep'), self.assertRaises(SourceTemporaryError):
             client.get('https://www.avito.ru/samara/avtomobili')
         self.assertEqual(client.page_source, '')
         self.assertEqual(client.session.get.call_count, 2)

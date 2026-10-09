@@ -1,135 +1,15 @@
-<!DOCTYPE html>
-<html lang="ru">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{% block title %}Автомобильные объявления{% endblock %}</title>
-    
-    <!-- Bootstrap 5 CSS -->
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    
-    <!-- Font Awesome -->
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
-    
-    <!-- Custom CSS -->
-    <style>
-        body {
-            min-height: 100vh;
-            display: flex;
-            flex-direction: column;
-            background-color: #f8f9fa;
-        }
-        
-        .navbar-brand {
-            font-weight: bold;
-        }
-        
-        .content {
-            flex: 1;
-        }
-        
-        .footer {
-            margin-top: auto;
-            padding: 1rem 0;
-            background-color: #f8f9fa;
-            border-top: 1px solid #e9ecef;
-        }
-        
-        .card {
-            transition: transform 0.2s;
-            height: 100%;
-        }
-        
-        .card:hover {
-            transform: translateY(-5px);
-            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
-        }
-        
-        .card-img-top {
-            height: 200px;
-            object-fit: cover;
-        }
-        
-        .price {
-            font-weight: bold;
-            color: #28a745;
-        }
-        
-        .platform-badge {
-            position: absolute;
-            top: 10px;
-            right: 10px;
-            z-index: 1;
-        }
-        
-        .filter-section {
-            background-color: #fff;
-            border-radius: 0.5rem;
-            box-shadow: 0 0.125rem 0.25rem rgba(0,0,0,0.075);
-            padding: 1.5rem;
-            margin-bottom: 2rem;
-        }
-        
-        .filter-heading {
-            border-bottom: 1px solid #e9ecef;
-            padding-bottom: 0.5rem;
-            margin-bottom: 1rem;
-        }
-        
-        @media (max-width: 768px) {
-            .filter-section {
-                position: sticky;
-                top: 0;
-                z-index: 1020;
-            }
-        }
-    </style>
-    
-    {% block extra_css %}{% endblock %}
-</head>
-<body>
-    <!-- Navbar -->
-    <nav class="navbar navbar-expand-lg navbar-light bg-light">
-        <div class="container">
-            <a class="navbar-brand" href="{% url 'ads:index' %}">
-                <i class="fas fa-car me-2"></i>Авто-Объявления
-            </a>
-            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
-                <span class="navbar-toggler-icon"></span>
-            </button>
-            <div class="collapse navbar-collapse" id="navbarNav">
-                <ul class="navbar-nav ms-auto">
-                    <li class="nav-item">
-                        <a class="nav-link" href="{% url 'ads:index' %}">Главная</a>
-                    </li>
-                </ul>
-            </div>
-        </div>
-    </nav>
-    
-    <!-- Main Content -->
-    <div class="content container py-4">
-        {% block content %}{% endblock %}
-    </div>
-    
-    <!-- Footer -->
-    <footer class="footer">
-        <div class="container">
-            <div class="row">
-                <div class="col-md-6">
-                    <p class="mb-0">&copy; 2025 Авто-Объявления. Все права защищены.</p>
-                </div>
-                <div class="col-md-6 text-md-end">
-                    <p class="mb-0">Объявления с Avito, Drom и Auto.ru</p>
-                </div>
-            </div>
-        </div>
-    </footer>
-    
-    <!-- Bootstrap 5 JS Bundle with Popper -->
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-    
-    <!-- Custom JS -->
-    {% block extra_js %}{% endblock %}
-</body>
-</html> 
+{% load static %}<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#f5f5f2"><title>{% block title %}Автопоиск — Avito, Auto.ru и Дром{% endblock %}</title><link rel="stylesheet" href="{% static 'ads/search.css' %}">{% block head %}{% endblock %}</head><body>
+<svg class="svg-library" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>
+<symbol id="i-car" viewBox="0 0 24 24"><path d="m5 10 2-5h10l2 5M3 10h18v8H3zM5 18v2m14-2v2M6 14h2m8 0h2"/></symbol>
+<symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></symbol>
+<symbol id="i-arrow" viewBox="0 0 24 24"><path d="M4 12h16m-6-6 6 6-6 6"/></symbol>
+<symbol id="i-pin" viewBox="0 0 24 24"><path d="M19 10c0 5-7 11-7 11S5 15 5 10a7 7 0 1 1 14 0Z"/><circle cx="12" cy="10" r="2"/></symbol>
+<symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h4m4 0h8M4 17h10m4 0h2"/><circle cx="10" cy="7" r="2"/><circle cx="16" cy="17" r="2"/></symbol>
+<symbol id="i-grid" viewBox="0 0 24 24"><rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><rect x="14" y="14" width="6" height="6" rx="1"/></symbol>
+<symbol id="i-list" viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11M4 6h1M4 12h1M4 18h1"/></symbol>
+<symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 9a8 8 0 1 0-1 9M20 4v5h-5"/></symbol>
+<symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></symbol>
+<symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></symbol>
+</defs></svg>
+<header class="site-header"><div class="header-inner"><a href="{% url 'ads:index' %}" class="brand" aria-label="Автопоиск — главная"><span class="brand-mark"><svg class="icon"><use href="#i-car"/></svg></span>автопоиск<span class="brand-dot">.</span></a><span class="header-note">Avito <span>·</span> Auto.ru <span>·</span> Дром</span><span class="header-tag"><span class="tiny-dot"></span> Общая лента объявлений</span></div></header>
+<main class="page">{% block content %}{% endblock %}</main><footer class="site-footer"><span>Автопоиск · Avito / Auto.ru / Дром</span><span>Объявления и фотографии принадлежат их авторам.</span></footer>{% block scripts %}{% endblock %}</body></html>

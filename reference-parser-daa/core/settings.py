@@ -12,9 +12,13 @@ SECRET_KEY = required_env('DJANGO_SECRET_KEY')
 
 DEBUG = os.getenv('DEBUG', 'False').lower() in ('true', '1', 'yes')
 
-ALLOWED_HOSTS = ['localhost', '127.0.0.1', '0.0.0.0', '*', '95.24.176.97', '4ead-195-58-39-243.ngrok-free.app']
+ALLOWED_HOSTS = [host.strip() for host in os.getenv('DJANGO_ALLOWED_HOSTS', 'localhost,127.0.0.1,[::1],web').split(',') if host.strip()]
 
-CSRF_TRUSTED_ORIGINS = ['https://4ead-195-58-39-243.ngrok-free.app']
+CSRF_TRUSTED_ORIGINS = [origin.strip() for origin in os.getenv('DJANGO_CSRF_TRUSTED_ORIGINS', '').split(',') if origin.strip()]
+SESSION_COOKIE_HTTPONLY = True
+SESSION_COOKIE_SAMESITE = 'Lax'
+SECURE_CONTENT_TYPE_NOSNIFF = True
+SECURE_REFERRER_POLICY = 'same-origin'
 
 INSTALLED_APPS = [
     'django.contrib.admin',

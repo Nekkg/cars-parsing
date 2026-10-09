@@ -35,23 +35,23 @@ class CatalogSearchTests(SimpleTestCase):
         from bot.handlers.vehicle_search import catalog_text, catalog_callback
         state = AsyncMock()
         state.get_data.return_value = {'catalog_parent':12,'catalog_query':'x', 'catalog_mode':'all'}
-        message = SimpleNamespace(text='x5')
-        callback = SimpleNamespace(data='car:list:12:1',answer=AsyncMock(),message=message)
+        message = SimpleNamespace(text='x5',chat=SimpleNamespace(id=9))
+        callback = SimpleNamespace(data='car:list:12:1',answer=AsyncMock(),message=message,from_user=SimpleNamespace(id=9))
         with patch('bot.handlers.vehicle_search.show_picker',new_callable=AsyncMock) as show:
             await catalog_text(message,state)
             show.assert_awaited_once_with(message,state,parent=12,query='x5',mode='all')
             show.reset_mock()
             await catalog_callback(callback,state)
-            show.assert_awaited_once_with(message,state,12,1,query='x',mode='all')
+            show.assert_awaited_once_with(message,state,12,1,query='x',mode='all',user_id=9)
 
     async def test_full_catalog_clears_query_and_close_exits_state(self):
         from bot.handlers.vehicle_search import catalog_callback
         state = AsyncMock()
         state.get_data.return_value = {'catalog_query':'bmw'}
-        callback = SimpleNamespace(data='car:all:0:0',answer=AsyncMock(),message=AsyncMock())
+        callback = SimpleNamespace(data='car:all:0:0',answer=AsyncMock(),message=AsyncMock(),from_user=SimpleNamespace(id=9))
         with patch('bot.handlers.vehicle_search.show_picker',new_callable=AsyncMock) as show:
             await catalog_callback(callback,state)
-            show.assert_awaited_once_with(callback.message,state,mode='all')
+            show.assert_awaited_once_with(callback.message,state,mode='all',user_id=9)
         callback.data='car:close:0'
         await catalog_callback(callback,state)
         state.clear.assert_awaited_once()

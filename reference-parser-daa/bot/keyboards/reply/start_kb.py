@@ -3,8 +3,8 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 start_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [
-            KeyboardButton(text="Включить уведомления"),
-            KeyboardButton(text="Выключить уведомления"),
+            KeyboardButton(text="Найти машину"),
+            KeyboardButton(text="Отслеживание"),
         ],
         [
             KeyboardButton(text="Фильтры"),

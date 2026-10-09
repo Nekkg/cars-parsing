@@ -38,12 +38,12 @@ class QueryParserTests(SimpleTestCase):
         self.assertEqual(extract_listings('<div class="ListingEmptyOffers"><a href="/sale/123456789/">Похожие предложения</a></div>','autoru'),[])
         with self.assertRaises(RuntimeError): extract_listings('<div>Unexpected HTML</div>','autoru')
 
-    def test_keyboard_restores_notifications_and_removes_site(self):
+    def test_keyboard_has_search_tracking_and_no_site(self):
         from bot.keyboards.reply.start_kb import start_keyboard
         from bot.keyboards.inline.filters_kb import filters_keyboard
         texts=[b.text for row in start_keyboard.keyboard for b in row]
-        self.assertIn('Включить уведомления',texts)
-        self.assertIn('Выключить уведомления',texts)
+        self.assertIn('Найти машину',texts)
+        self.assertIn('Отслеживание',texts)
         self.assertIn('Очистить выбор',texts)
         self.assertNotIn('Смотреть все объявления',texts)
         self.assertTrue(start_keyboard.is_persistent)

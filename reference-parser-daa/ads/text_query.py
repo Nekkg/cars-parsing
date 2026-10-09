@@ -22,6 +22,9 @@ def split_vehicle_query(text, makes):
 
 
 def model_suggestions(make, text, models):
+    from .query_language import model_aliases
+    exact_alias=[model for model in models if normalize(text) in {normalize(alias) for alias in model_aliases(model)}]
+    if exact_alias: return exact_alias,''
     query=normalize(text)
     variant=''
     if normalize(make.slug)=='bmw':
@@ -30,6 +33,11 @@ def model_suggestions(make, text, models):
             variant=text.upper()
             query=match[1]+'series'
         elif re.fullmatch(r'[1-8]',query): query+='series'
+    if normalize(make.slug)=='mercedesbenz':
+        match=re.fullmatch(r'([ceas]|gl[aceks]|ml|cl[aks]?)(\d{3})(?:[diel]*)',query)
+        if match:
+            variant=match[1].upper()+match[2]
+            query=match[1]+'class' if match[1] in ('c','e','a','s') else match[1]
     ranked=ranked_rows(models,query,make_slug=make.slug)
     exact=[m for m in ranked if query in {normalize(m.name),normalize(m.slug)}]
     return exact or ranked[:8],variant

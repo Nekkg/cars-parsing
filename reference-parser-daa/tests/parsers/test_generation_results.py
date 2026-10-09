@@ -82,7 +82,7 @@ class GenerationNormalizationTests(TestCase):
         token = job.requested_at.isoformat()
         job.source_state = {'avito': {'cycle':token,'requested_at':token,'status':'доступ ограничен',
             'error_code':'blocked','count':50,'pages':1,'next_page':2,'route':0,
-            'listing_finished':False,'detail_queue':[card()]}}
+            'listing_finished':False,'detail_queue':[card()],'query_years':[2000,2004],'query_years_version':2}}
         job.save(update_fields=['source_state'])
         html = '<div data-marker="item-view/item-params"><li>Поколение: I (2000—2004)</li></div>'
         with patch('parsers.collector.load_page', return_value=html) as load:

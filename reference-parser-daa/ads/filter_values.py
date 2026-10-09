@@ -39,11 +39,17 @@ def describe(filters):
     vehicle = filters.get('vehicle', {})
     parts = [vehicle[k]['name'] for k in ('make','model') if k in vehicle]
     if filters.get('variant'): parts.append(filters['variant'])
-    gen = vehicle.get('generation')
-    if gen:
-        parts.append(gen.get('description') or gen['name'])
-        if gen.get('codes'):
-            parts.append('(' + ', '.join(gen['codes']) + ')')
+    if filters.get('generation_hint'): parts.append('('+filters['generation_hint']+')')
+    from .vehicle_selection import selected_generations
+    generations = selected_generations(filters)
+    if generations:
+        labels = []
+        for gen in generations:
+            label = gen.get('description') or gen['name']
+            if gen.get('codes'):
+                label += ' (' + ', '.join(gen['codes']) + ')'
+            labels.append(label)
+        parts.append('; '.join(labels))
     lines = ['🚗 ' + (' '.join(parts) or ', '.join(filters.get('brand') or []) or 'Любой автомобиль')]
     labels = {'price':'Цена, ₽','year':'Год','city':'Город','platform':'Площадки',
               'mileage':'Пробег, км','engine':'Двигатель','gearbox':'Коробка','owners':'Владельцы',
@@ -59,4 +65,5 @@ def describe(filters):
         elif isinstance(value, list):
             value = ', '.join(value)
         lines.append(f'{label}: {value}')
+    if filters.get('radius_km'): lines.append('Радиус: +'+str(filters['radius_km'])+' км')
     return '\n'.join(lines)

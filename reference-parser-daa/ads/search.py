@@ -12,12 +12,12 @@ from .filter_values import bounds
 
 
 def canonical(value):
-    return re.sub(r'[^\w]+', '', str(value).casefold()).replace('_', '')
+    return re.sub(r'[^\w]+', '', str(value).casefold().replace('+','plus')).replace('_', '')
 
 
 def snapshot(user_filters):
     fields = ('platform', 'price', 'brand', 'variant', 'engine', 'mileage', 'gearbox', 'owners',
-              'condition', 'seller', 'city', 'year', 'body_type', 'color', 'drive', 'steering')
+              'condition', 'seller', 'city', 'year', 'body_type', 'color', 'drive', 'steering','radius_km','location','generation_hint')
     data = {field: getattr(user_filters, field) for field in fields}
     if user_filters.vehicle_id:
         path = vehicle_path(user_filters.vehicle)
@@ -28,6 +28,31 @@ def snapshot(user_filters):
             if target:
                 path['model'] = target
         data['vehicle'] = {kind: {'name': node.name, 'slug': node.slug, 'key': node.key, **node.data} for kind, node in path.items()}
+    if user_filters.generation_keys and data.get('vehicle', {}).get('model'):
+        from .models import CatalogNode
+        model_key = data['vehicle']['model'].get('key')
+        nodes = CatalogNode.objects.filter(kind='generation', parent__key=model_key,
+                                          key__in=user_filters.generation_keys)
+        nodes = sorted(nodes, key=lambda node: (node.data.get('year_from') or 0, node.key))
+        data['vehicle'].pop('generation', None)
+        data['vehicle']['generations'] = [
+            {'name': node.name, 'slug': node.slug, 'key': node.key, **node.data} for node in nodes]
+        # Keep missing identities restrictive, rather than silently broadening an old selection.
+        data['generation_keys'] = sorted(set(user_filters.generation_keys))
+    if data.get('generation_hint') and data.get('vehicle',{}).get('model'):
+        from ads.models import CatalogNode
+        from parsers.generations import contains_code
+        model_key=data['vehicle']['model'].get('key')
+        nodes=list(CatalogNode.objects.filter(kind='generation',parent__key=model_key))
+        direct=[node for node in nodes if any(contains_code(data['generation_hint'],code)
+                for code in (*node.data.get('codes',[]),*node.data.get('frame_codes',[])))]
+        families={node.data['generation_number'] for node in direct if node.data.get('generation_number') is not None}
+        data['generation_keys']=[node.key for node in nodes if node in direct or node.data.get('generation_number') in families]
+        from .vehicle_selection import selected_generations
+        if not selected_generations(data):
+            selected=sorted((node for node in nodes if node.key in data['generation_keys']),
+                key=lambda node:(node.data.get('year_from') or 0,node.key))
+            data['generation_years']=[{'name':node.name,'slug':node.slug,'key':node.key,**node.data} for node in selected]
     return data
 
 
@@ -57,48 +82,71 @@ def enqueue(data, refresh=True):
     return job
 
 
+def matches_generation(ad, generation):
+    from .generation_labels import facelift
+    actual_key = ad.get('generation_key','')
+    expected_key = generation.get('key')
+    expected_slug = generation.get('slug')
+    if expected_key:
+        if actual_key != expected_key:
+            return False
+    elif actual_key and expected_slug:
+        if actual_key.rsplit('/',1)[-1] != expected_slug:
+            return False
+    else:
+        if (ad.get('generation_evidence') or {}).get('status') in ('unknown','ambiguous','conflict'):
+            return False
+        actual_generation = ad.get('generation','')
+        description = generation.get('description','')
+        if description and actual_generation and facelift(description) != facelift(actual_generation):
+            return False
+        codes = generation.get('codes',[])
+        actual = {canonical(s) for s in ad.get('generation_codes',[])}
+        if codes:
+            if not actual.intersection(canonical(c) for c in codes):
+                return False
+        elif not description or description not in actual_generation:
+            return False
+    year = ad.get('year')
+    if not str(year).isdigit():
+        return False
+    if generation.get('year_from') and int(year) < generation['year_from']:
+        return False
+    if generation.get('year_to') and int(year) > generation['year_to']:
+        return False
+    return True
+
+
 def matches(ad, filters):
     """Unknown values never satisfy an explicitly requested numeric/model constraint."""
     vehicle = filters.get('vehicle', {})
+    if filters.get('radius_km'):
+        from .geography import within_radius
+        if not within_radius(ad.get('city',''),filters.get('location',{}),filters['radius_km']): return False
     if filters.get('variant') and canonical(filters['variant']) not in canonical(ad.get('name','')):
         return False
+    model_node=vehicle.get('model')
+    identified=(ad.get('generation_evidence') or {}).get('model_key')
+    if model_node and model_node.get('key') and identified and identified!=model_node['key']:
+        return False
+    if model_node:
+        # Old rows lack catalogue identity. Preserve numeric-name punctuation.
+        import re
+        actual=str(ad.get('model','')).replace(' ','')
+        selected=str(model_node.get('slug','')).replace(' ','')
+        if re.fullmatch(r'\d+(?:-\d+)*',actual) and re.fullmatch(r'\d+(?:-\d+)*',selected) and actual!=selected:
+            return False
     for field, kind in [('brand', 'make'), ('model', 'model')]:
         node = vehicle.get(kind)
         if node and canonical(ad.get(field, '')) not in {canonical(node['name']), canonical(node['slug'])}:
             return False
-    generation = vehicle.get('generation')
-    if generation:
-        from .generation_labels import facelift
-        actual_key = ad.get('generation_key','')
-        expected_key = generation.get('key')
-        expected_slug = generation.get('slug')
-        if expected_key:
-            if actual_key != expected_key:
-                return False
-        elif actual_key and expected_slug:
-            if actual_key.rsplit('/',1)[-1] != expected_slug:
-                return False
-        else:
-            if (ad.get('generation_evidence') or {}).get('status') in ('unknown','ambiguous','conflict'):
-                return False
-            actual_generation = ad.get('generation','')
-            description = generation.get('description','')
-            if description and actual_generation and facelift(description) != facelift(actual_generation):
-                return False
-            codes = generation.get('codes',[])
-            actual = {canonical(s) for s in ad.get('generation_codes',[])}
-            if codes:
-                if not actual.intersection(canonical(c) for c in codes):
-                    return False
-            elif not description or description not in actual_generation:
-                return False
-        year = ad.get('year')
-        if not str(year).isdigit():
-            return False
-        if generation.get('year_from') and int(year) < generation['year_from']:
-            return False
-        if generation.get('year_to') and int(year) > generation['year_to']:
-            return False
+    if filters.get('generation_hint') and ad.get('generation_key') not in filters.get('generation_keys',[]): return False
+    from .vehicle_selection import selected_generations
+    generations = selected_generations(filters)
+    if generations and not any(matches_generation(ad, generation) for generation in generations):
+        return False
+    if filters.get('generation_keys') and ad.get('generation_key') not in filters['generation_keys']:
+        return False
     for field in ('price', 'year', 'mileage', 'owners'):
         value = filters.get(field)
         if not value or value == 'unknown':
@@ -112,14 +160,18 @@ def matches(ad, filters):
             return False
     for field in ('platform', 'brand', 'city', 'engine', 'gearbox', 'body_type', 'color', 'drive', 'steering', 'condition', 'seller'):
         values = filters.get(field)
-        if not values or ('make' in vehicle and field == 'brand'):
+        if not values or ('make' in vehicle and field == 'brand') or field=='city' and filters.get('radius_km'):
             continue
         values = values if isinstance(values, list) else [values]
         if 'unknown' in values:
             continue
-        actual = canonical(ad.get(field, ''))
-        if not actual or actual == 'unknown' or not any(canonical(v) in actual for v in values):
-            return False
+        if field in ('engine','gearbox','body_type','color','drive','steering','condition','seller'):
+            from .filter_schema import matches_attribute
+            if not matches_attribute(field, ad.get(field, ''), values): return False
+        else:
+            actual = canonical(ad.get(field, ''))
+            if not actual or actual == 'unknown' or not any(canonical(v) in actual for v in values):
+                return False
     return True
 
 
@@ -127,9 +179,12 @@ SORT_LABELS = {'newest':'Сначала новые объявления','cheap'
 SORT_FIELDS = {'newest':('-fresh_at','-created_at','-id'), 'cheap':('price','-created_at','-id'), 'expensive':('-price','-created_at','-id')}
 
 
-def results(filters, sort_order='newest'):
+def results(filters, sort_order='newest',defer_media=False,created_since=None,candidate_filter=None):
     from django.db.models.functions import Coalesce
     rows = Advertisement.objects.annotate(fresh_at=Coalesce('published_at', 'created_at')).order_by(*SORT_FIELDS.get(sort_order,SORT_FIELDS['newest']))
+    if created_since is not None: rows=rows.filter(created_at__gte=created_since)
+    if candidate_filter is not None: rows=rows.filter(candidate_filter)
+    if defer_media: rows=rows.defer('images')
     from django.db.models import Q
     vehicle = filters.get('vehicle', {})
     for field, kind in (('brand', 'make'), ('model', 'model')):
@@ -137,11 +192,19 @@ def results(filters, sort_order='newest'):
         if node:
             keys = {canonical(node.get('name', '')), canonical(node.get('slug', ''))} - {''}
             rows = rows.filter(**{field + '_key__in': keys})
-    generation = vehicle.get('generation',{})
-    if generation.get('key'):
-        rows = rows.filter(generation_key=generation['key'])
+    from .vehicle_selection import selected_generations
+    keys = [row['key'] for row in selected_generations(filters) if row.get('key')]
+    if keys:
+        rows = rows.filter(generation_key__in=keys)
+    if filters.get('generation_keys') or filters.get('generation_hint'):
+        rows = rows.filter(generation_key__in=filters.get('generation_keys', []))
     cities = filters.get('city')
-    if cities and 'unknown' not in cities:
+    if filters.get('radius_km') and filters.get('location'):
+        from .geography import nearby_names
+        location=filters['location']
+        names=nearby_names(location['latitude'],location['longitude'],filters['radius_km'])
+        rows=rows.filter(city__iregex='|'.join(re.escape(name) for name in names))
+    elif cities and 'unknown' not in cities:
         query = Q()
         for city in cities: query |= Q(city__icontains=city.strip())
         rows = rows.filter(query)
@@ -151,6 +214,25 @@ def results(filters, sort_order='newest'):
         if hi is not None: rows = rows.filter(price__lte=hi)
     except ValueError:
         return []
+    # Push numeric constraints into SQL before the exact shared matcher. CASE
+    # protects casts from unknown/oversized source strings; missing values stay out.
+    from django.db.models import Case, When, Value, IntegerField, F
+    from django.db.models.functions import Cast
+    for field in ('year', 'mileage', 'owners'):
+        try:
+            lower, upper = bounds(filters.get(field))
+        except ValueError:
+            return []
+        if lower is None and upper is None:
+            continue
+        column = field
+        if field in ('year', 'owners'):
+            column = 'numeric_'+field
+            rows = rows.annotate(**{column:Case(
+                When(**{field+'__regex':r'^[0-9]{1,9}$'}, then=Cast(F(field), IntegerField())),
+                default=Value(None), output_field=IntegerField())})
+        if lower is not None: rows = rows.filter(**{column+'__gte': lower})
+        if upper is not None: rows = rows.filter(**{column+'__lte': upper})
     platforms = filters.get('platform')
     if platforms and 'unknown' not in platforms:
         rows = rows.filter(platform__in=platforms)

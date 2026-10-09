@@ -26,7 +26,7 @@ services:
       - POSTGRES_PORT=${POSTGRES_PORT}
       - TZ=${TZ:-UTC}
       - WEBSITE_URL=${WEBSITE_URL:-https://example.com}
-    command: python manage.py runserver 0.0.0.0:8000
+    command: python manage.py runserver --insecure 0.0.0.0:8000
     restart: "no"
     networks:
       - app_network

@@ -4,11 +4,65 @@ from aiogram.types import CallbackQuery, Message
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.exceptions import TelegramBadRequest
 
-from services.filters_service import update_user_filter, get_user_filters, get_user_filter_values, clear_user_filter, get_user_filters_explain
-from keyboards.inline.check_filters_kb import check_filters_keyboard
-from keyboards.inline.filters_mapping_kb import filter_keyboard, filter_keyboard_back_button, city_keyboard
-from keyboards.inline.filters_kb import filters_keyboard
+from bot.services.filters_service import update_user_filter, get_user_filters, get_user_filter_values, clear_user_filter, get_user_filters_explain, update_user_location
+from bot.keyboards.inline.check_filters_kb import check_filters_keyboard
+from bot.keyboards.inline.filters_mapping_kb import filter_keyboard, filter_keyboard_back_button, city_keyboard
+from bot.keyboards.inline.filters_kb import filters_keyboard
 from .filter_mapping import FILTER_MAPPING_LANGUAGE, FILTER_MAPPING_DESCRIPTION
+
+from html import escape
+from ads.geography import parse_city_input
+from users.models import UserFilters
+from bot.handlers.text_search import MENU_TEXTS
+from aiogram.types import InlineKeyboardButton as Button, InlineKeyboardMarkup as Keyboard
+
+CITY_HINT = ('Выберите города кнопками или напишите город и радиус сообщением.\n'
+             'Например: Самара, Самара +100, Самара +200 км, мск +200.\n'
+             'Для радиуса нужен один город. Расстояние считается по прямой.')
+
+
+def city_panel_text(values, radius_km=0):
+    selection = ', '.join(values) or 'не выбран'
+    if radius_km:
+        selection += f' +{radius_km} км'
+    return CITY_HINT + '\n\nГород: ' + escape(selection)
+
+
+async def activate_city_input(state, message):
+    await state.set_state(FilterStates.entering_city)
+    await state.update_data(city_panel_id=message.message_id, city_panel_chat=message.chat.id,
+                            city_choices=[], city_choice_message=None)
+
+
+async def current_city_origin(user_id):
+    filters, _ = await UserFilters.objects.aget_or_create(user_id=user_id)
+    current = filters.city
+    origin = None
+    if len(current) == 1:
+        origin = filters.location if filters.location.get('name') == current[0] else current[0]
+    return current, origin
+
+async def apply_city_request(message, state, user_id, parsed):
+    if parsed['city_choices']:
+        sent = await message.answer('Уточните город:', reply_markup=Keyboard(inline_keyboard=[
+            [Button(text=(city['name']+' · '+city['region'])[:90], callback_data=f'city:choose:{i}')]
+            for i, city in enumerate(parsed['city_choices'])]))
+        await state.update_data(city_choices=parsed['city_choices'], city_radius=parsed['radius_km'],
+                                city_choice_message=sent.message_id)
+        return
+    await update_user_location(user_id, parsed['location'], parsed['radius_km'])
+    data = await state.get_data()
+    kwargs = dict(text=city_panel_text(parsed['city'], parsed['radius_km']),
+                  reply_markup=city_keyboard(parsed['city'], parsed['radius_km']), parse_mode='HTML')
+    try:
+        await message.bot.edit_message_text(chat_id=data.get('city_panel_chat', message.chat.id),
+                                           message_id=data['city_panel_id'], **kwargs)
+    except (TelegramBadRequest, KeyError) as error:
+        if 'message is not modified' not in str(error).lower():
+            sent = await message.answer(**kwargs)
+            await state.update_data(city_panel_id=sent.message_id, city_panel_chat=message.chat.id)
+    await state.update_data(city_choices=[], city_choice_message=None)
+    await state.set_state(FilterStates.entering_city)
 
 import logging
 logger = logging.getLogger(__name__)
@@ -21,6 +75,7 @@ router = Router()
 
 @router.callback_query(F.data.startswith("filter_"))
 async def filter_handler(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
     filter_name_rus = callback.data.replace("filter_", "")  # Русское название
     filter_name = FILTER_MAPPING_LANGUAGE.get(filter_name_rus)  # Перевод в поле модели
     filter_description = FILTER_MAPPING_DESCRIPTION.get(filter_name_rus)
@@ -33,14 +88,12 @@ async def filter_handler(callback: CallbackQuery, state: FSMContext):
     
     # Если это фильтр города, показываем специальную клавиатуру
     if filter_name_rus == "Город":
-        keyboard = city_keyboard(current_values)
-        await callback.message.edit_text(
-            f"Выберите {filter_name_rus} из популярных или введите свой:\n"
-            f"Формат: «{filter_description}»",
-            reply_markup=keyboard,
-        )
+        await callback.answer()
+        filters, _ = await UserFilters.objects.aget_or_create(user_id=callback.from_user.id)
+        await callback.message.edit_text(city_panel_text(current_values, filters.radius_km),
+                                         reply_markup=city_keyboard(current_values, filters.radius_km), parse_mode='HTML')
+        await activate_city_input(state, callback.message)
         return
-    
     keyboard = filter_keyboard(filter_name_rus, current_values, page=1)
     
     sent_message = await callback.message.edit_text(
@@ -113,63 +166,54 @@ async def save_filter_value(message: Message, state: FSMContext):
     await state.clear()  # Очищаем состояние
 
 
-@router.message(FilterStates.entering_city)
+@router.message(FilterStates.entering_city, F.text, ~F.text.startswith('/'), ~F.text.in_(MENU_TEXTS))
 async def save_city_value(message: Message, state: FSMContext):
     try:
-        user_id = message.from_user.id
-        city = message.text
-        logger.info(f"User {user_id} entered city: {city}")
-        
-        # Получаем данные из состояния
-        user_data = await state.get_data()
-        message_id = user_data.get("message_id")
-        
-        # Удаляем сообщение пользователя
-        await message.delete()
-        
-        # Получаем текущие города пользователя
-        current_cities = await get_user_filter_values(user_id, "city")
-        logger.info(f"Current cities for user {user_id}: {current_cities}")
-        
-        # Добавляем новый город в список
-        if isinstance(current_cities, list):
-            if city not in current_cities:
-                current_cities.append(city)
-        else:
-            current_cities = [city]
-        
-        # Сохраняем обновленный список городов
-        await update_user_filter(user_id, "city", current_cities)
-        logger.info(f"Updated cities for user {user_id}: {current_cities}")
-        
-        # Получаем обновленную клавиатуру
-        keyboard = city_keyboard(current_cities)
-        
-        try:
-            # Пытаемся обновить исходное сообщение
-            await message.bot.edit_message_text(
-                chat_id=user_id,
-                message_id=message_id,
-                text=f"Выберите Город из популярных или введите свой:\nФормат: «москва»\n\n✅ Добавлен город: {city}",
-                reply_markup=keyboard
-            )
-            logger.info(f"Successfully updated message with city keyboard for user {user_id}")
-        except TelegramBadRequest as e:
-            logger.error(f"Error updating message: {e}")
-            # Если сообщение не найдено или не может быть отредактировано, отправляем новое
-            await message.answer(
-                f"✅ Город добавлен: {city}", 
-                reply_markup=filter_keyboard_back_button(filter_name="Город")
-            )
-        
-        # Очищаем состояние
-        await state.clear()
-        
-    except Exception as e:
-        logger.error(f"Error in save_city_value: {e}")
-        await message.answer(f"❌ Произошла ошибка при сохранении города: {e}")
-        await state.clear()
+        _, origin = await current_city_origin(message.from_user.id)
+        parsed = parse_city_input(message.text, origin)
+    except ValueError as error:
+        await message.answer(escape(str(error)), parse_mode='HTML')
+        return
+    await apply_city_request(message, state, message.from_user.id, parsed)
 
+
+@router.callback_query(F.data.startswith('city:'))
+async def city_action(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    _, action, raw = callback.data.split(':')
+    try:
+        value = int(raw)
+        if action == 'choose':
+            choices = data.get('city_choices', [])
+            if callback.message.message_id != data.get('city_choice_message') or not 0 <= value < len(choices):
+                raise ValueError('Этот выбор устарел. Введите город заново.')
+            city = choices[value]
+            parsed = dict(city=[city['name']], location=city, radius_km=data['city_radius'], city_choices=[])
+            await callback.answer()
+            await apply_city_request(callback.message, state, callback.from_user.id, parsed)
+            await callback.message.edit_reply_markup(reply_markup=None)
+        elif action == 'radius' and value in (0, 100, 200, 500):
+            if data.get('city_panel_id') != callback.message.message_id:
+                raise ValueError('Этот выбор устарел. Откройте фильтр города заново.')
+            current, origin = await current_city_origin(callback.from_user.id)
+            if not value:
+                await update_user_filter(callback.from_user.id, 'city', current)
+                await callback.answer()
+                try:
+                    await callback.message.edit_text(city_panel_text(current), reply_markup=city_keyboard(current), parse_mode='HTML')
+                except TelegramBadRequest as error:
+                    if 'message is not modified' not in str(error).lower():
+                        raise
+                return
+            if len(current) != 1:
+                raise ValueError('Для радиуса выберите один город или напишите: Самара +200.')
+            parsed = parse_city_input(f'+{value}', origin)
+            await callback.answer()
+            await apply_city_request(callback.message, state, callback.from_user.id, parsed)
+        else:
+            raise ValueError('Недоступная кнопка. Откройте фильтр города заново.')
+    except ValueError as error:
+        await callback.answer(str(error), show_alert=True)
 
 @router.callback_query(F.data.startswith("toggle_filter_"))
 async def save_filter_value_inline(callback: CallbackQuery):
@@ -206,7 +250,7 @@ async def save_filter_value_inline(callback: CallbackQuery):
 
 
 @router.callback_query(F.data.startswith("toggle_city_"))
-async def toggle_city(callback: CallbackQuery):
+async def toggle_city(callback: CallbackQuery, state: FSMContext):
     try:
         city = callback.data.replace("toggle_city_", "")
         user_id = callback.from_user.id
@@ -239,7 +283,8 @@ async def toggle_city(callback: CallbackQuery):
         
         # Обновляем клавиатуру
         keyboard = city_keyboard(current_values)
-        await callback.message.edit_reply_markup(reply_markup=keyboard)
+        await callback.message.edit_text(city_panel_text(current_values), reply_markup=keyboard, parse_mode='HTML')
+        await activate_city_input(state, callback.message)
         
         # Показываем уведомление
         await callback.answer(f"{'✅ Город добавлен' if city in current_values else '❌ Город удален'}: {city}")
@@ -251,21 +296,9 @@ async def toggle_city(callback: CallbackQuery):
 
 @router.callback_query(F.data == "enter_custom_city")
 async def enter_custom_city(callback: CallbackQuery, state: FSMContext):
-    try:
-        # Сохраняем ID сообщения для дальнейшего обновления
-        await state.update_data(message_id=callback.message.message_id)
-        await state.update_data(selected_filter="city")
-        await state.update_data(selected_filter_rus="Город")
-        await state.set_state(FilterStates.entering_city)
-        
-        logger.info(f"User {callback.from_user.id} is entering custom city, state set to entering_city")
-        
-        # Показываем всплывающее уведомление
-        await callback.answer("Введите название города в чат")
-    except Exception as e:
-        logger.error(f"Error in enter_custom_city: {e}")
-        await callback.message.answer(f"❌ Ошибка: {e}")
-
+    await callback.answer('Напишите город и, при необходимости, +200 км')
+    await activate_city_input(state, callback.message)
+    await callback.message.answer(CITY_HINT)
 
 @router.callback_query(F.data == "check_filters")
 async def check_filters(callback: CallbackQuery):
@@ -276,7 +309,7 @@ async def check_filters(callback: CallbackQuery):
 
 
 @router.callback_query(F.data.startswith("clear_filter_"))
-async def clear_filter(callback: CallbackQuery):
+async def clear_filter(callback: CallbackQuery, state: FSMContext):
     try:
         user_id = callback.from_user.id
         filter_name_rus = callback.data.split("_")[2]
@@ -291,28 +324,16 @@ async def clear_filter(callback: CallbackQuery):
         
         # Если это фильтр города, показываем специальную клавиатуру
         if filter_name_rus == "Город":
+            panel = callback.message
             try:
-                # Получаем новую клавиатуру с пустыми значениями
-                keyboard = city_keyboard([])
-                
-                # Пытаемся изменить текст сообщения, чтобы обойти ошибку "message is not modified"
-                await callback.message.edit_text(
-                    f"Выберите Город из популярных или введите свой:\nФормат: «москва»\n\n✅ Фильтр по городам очищен",
-                    reply_markup=keyboard
-                )
-            except TelegramBadRequest as e:
-                logger.error(f"Error in clear_filter (city): {e}")
-                # Если нельзя изменить сообщение, отправляем новое
-                await callback.message.delete()
-                await callback.message.answer(
-                    f"Выберите Город из популярных или введите свой:\nФормат: «москва»\n\n✅ Фильтр по городам очищен",
-                    reply_markup=keyboard
-                )
-            
-            # Показываем уведомление
-            await callback.answer("✅ Фильтр по городам очищен")
+                await panel.edit_text(city_panel_text([]), reply_markup=city_keyboard([]), parse_mode='HTML')
+            except TelegramBadRequest as error:
+                if 'message is not modified' not in str(error).lower():
+                    panel = await callback.message.answer(city_panel_text([]), reply_markup=city_keyboard([]), parse_mode='HTML')
+            await activate_city_input(state, panel)
+            await callback.answer('✅ Фильтр по городам и радиус очищены')
             return
-        
+        await state.clear()
         # Для остальных фильтров - стандартное поведение
         filters_text = await get_user_filters(callback.from_user.id)
         keyboard = filters_keyboard()

@@ -10,7 +10,7 @@ import json
 import time
 from urllib.parse import unquote
 
-from parsers.sources import SourceBlocked
+from parsers.sources import SourceBlocked, SourceUnavailable, SourceTemporaryError
 
 MAX_TOKEN_LENGTH = 16384
 MAX_COMPLEXITY = 5
@@ -70,11 +70,13 @@ def solution(token, *, seconds=SOLVE_SECONDS):
             break
         if hashlib.sha256(prefix + str(nonce).encode('ascii')).hexdigest().startswith(target):
             return {'challenge': token, 'nonce': nonce}
-    raise SourceBlocked('avito: PoW work budget exceeded')
+    raise SourceTemporaryError('avito: PoW work budget exceeded')
 
 
 def result(response, *, stage='PoW'):
     """Only successful HTTP and a strict typed envelope may advance the flow."""
+    if 500 <= response.status_code <= 599:
+        raise SourceUnavailable('avito', stage, response.status_code)
     if response.status_code != 200:
         raise SourceBlocked(f'avito: {stage} endpoint HTTP {response.status_code}')
     payload = response_payload(response)

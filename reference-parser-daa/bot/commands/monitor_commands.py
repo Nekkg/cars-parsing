@@ -1,26 +1,20 @@
+"""Old notification commands remain aliases for saved-query tracking."""
 from aiogram import Router
 from aiogram.filters import Command
-from aiogram.types import Message
+from asgiref.sync import sync_to_async
+from bot.handlers.tracking import offer_current
 from bot.keyboards.reply.start_kb import start_keyboard
-
-from services.monitoring_switch_service import enable_monitoring, disable_monitoring
-
-import logging
-logger = logging.getLogger(__name__)
+from bot.services.tracking_service import stop_user
 
 router = Router()
 
-@router.message(Command("monitor_on","notifications_on"))
-async def start_monitoring_command(message: Message):
-    user_id = message.from_user.id
-    await enable_monitoring(user_id=user_id)
-    logger.info(f"Monitoring is enabled for user {user_id}")
-    await message.answer("✅ Уведомления включены",reply_markup=start_keyboard)
+
+@router.message(Command('monitor_on', 'notifications_on'))
+async def start_monitoring_command(message):
+    await offer_current(message, message.from_user.id)
 
 
-@router.message(Command("monitor_off","notifications_off"))
-async def stop_monitoring_command(message: Message):
-    user_id = message.from_user.id
-    await disable_monitoring(user_id=user_id)
-    logger.info(f"Monitoring is disabled for user {user_id}")
-    await message.answer("❌ Уведомления выключены",reply_markup=start_keyboard)
+@router.message(Command('monitor_off', 'notifications_off'))
+async def stop_monitoring_command(message):
+    await sync_to_async(stop_user)(message.from_user.id)
+    await message.answer('⏸ Все отслеживания поставлены на паузу.', reply_markup=start_keyboard)

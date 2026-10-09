@@ -5,13 +5,31 @@ from functools import lru_cache
 from ads.search import canonical
 from ads.generation_labels import ordinal, facelift, production_range
 
-VERSION = 2
+VERSION = 5
 MAKE_ALIASES = (
-    ('lada','vaz','ваз','лада','ladaваз'), ('mercedes-benz','mercedes','мерседесбенц'),
+    ('lada','vaz','ваз','лада','Lada (ВАЗ)','ВАЗ (LADA)'), ('mercedes-benz','mercedes','мерседесбенц'),
     ('gaz','газ'), ('uaz','уаз'), ('izh','иж'),
     ('moskvich','moskvitch','moscvich','москвич'),
     ('li','lixiang','li auto'), ('lynk & co','lynkco','lynkandco'),
 )
+
+
+# Official source families differ from Drom's body/production phases for Granta.
+# Auto.ru catalogue: /catalog/cars/vaz/granta/7684102/ (I, 2011-2018),
+# Avito detail labels: I (2011-2018), I рестайлинг (2018-н.в.).
+# An explicit source generation is required; years alone never assign a family.
+SOURCE_GENERATION_PERIODS = {
+    ('lada/granta', 'avito', 1, 0): (2011, 2018),
+    ('lada/granta', 'avito', 1, 1): (2018, None),
+    ('lada/granta', 'autoru', 1, 0): (2011, 2018),
+    ('lada/granta', 'autoru', 1, 1): (2018, None),
+    # Observed Avito detail: III рестайлинг (2009—2016). This source family
+    # spans more than one regional production phase in the Drom catalogue.
+    ('toyota/rav4', 'avito', 3, 1): (2009, 2016),
+}
+SOURCE_CATALOGUE_PERIODS = {
+    ('toyota/rav4', 'avito', 3, 1): (2008, 2016),
+}
 
 
 def title_generation(title):
@@ -24,12 +42,16 @@ def title_generation(title):
 
 
 def aliases(node):
-    values = {node.name, node.slug, *node.data.get('aliases', [])}
+    from .source_names import extra_aliases
+    values = {node.name, node.slug, *node.data.get('aliases', []), *extra_aliases(node)}
     keys = {canonical(value) for value in values}
     if node.kind == 'make':
         for group in MAKE_ALIASES:
             if keys.intersection(canonical(value) for value in group):
                 values.update(group)
+    if node.kind == 'model' and node.parent and canonical(node.parent.slug) == 'lada':
+        # Repair stored Avito listings parsed before the full make-name fix.
+        values.update(prefix + value for value in list(values) for prefix in ('(LADA) ', '(ВАЗ) '))
     if node.kind == 'model' and node.parent and canonical(node.parent.slug) == 'bmw':
         match = re.fullmatch(r'([1-8])[-_ ]series',node.slug,re.I)
         if match:
@@ -45,8 +67,8 @@ def aliases(node):
 
 @lru_cache(maxsize=8192)
 def prefix_pattern(alias):
-    parts = re.split(r'[\W_]+',str(alias).strip())
-    pattern = r'[\s_\-/]*'.join(re.escape(part) for part in parts if part)
+    parts = re.findall(r'[^\W_]+|[+&]',str(alias).strip())
+    pattern = r'(?:[^\w+&]|_)*'.join(re.escape(part) for part in parts)
     return re.compile(r'^\s*'+pattern+r'(?=\W|$)',re.I) if pattern else None
 
 
@@ -160,21 +182,56 @@ class GenerationIndex:
         make = self.identify_make(ad)
         if not make:
             return None
+        from .model_names import explicit_family_model
+        family_model=self.models.get(explicit_family_model(ad))
+        if family_model and family_model.parent.key==make.key:return self.canonical_model(family_model)
+        if canonical(make.slug) == 'lexus':
+            from .model_names import lexus_model_slug, lexus_badge
+            inferred = lexus_model_slug(ad)
+            candidate = self.models.get(make.key+'/'+inferred) if inferred else None
+            raw = canonical(ad.get('model', ''))
+            badge = lexus_badge(candidate.slug) if candidate else None
+            allowed_raw = {canonical(candidate.slug), badge[0]} if badge else set()
+            if candidate and (not raw or raw.isdigit() or raw in allowed_raw):
+                return self.canonical_model(candidate)
         choices = self.model_aliases.get((make.key,canonical(ad.get('model',''))), [])
         unique = {self.canonical_model(node).key:self.canonical_model(node) for node in choices}
         if len(unique) == 1:
             return next(iter(unique.values()))
+        if len(unique)>1:
+            # Canonical punctuation can collide: Saab 93 and 9-3 are distinct cars.
+            # Prefer the longest literal catalogue name in the actual title.
+            title=ad.get('name','')
+            scores={}
+            for make_alias in aliases(make):
+                found=prefix(title,make_alias)
+                if not found:continue
+                tail=title[found.end():].strip()
+                for node in unique.values():
+                    for value in (node.name,):
+                        pattern=re.escape(value).replace(r'\ ',r'\s+')
+                        if re.match('^'+pattern+r'(?=\W|$)',tail,re.I):
+                            scores[node.key]=max(scores.get(node.key,0),len(value))
+            if scores:
+                best=[key for key,score in scores.items() if score==max(scores.values())]
+                if len(best)==1:return unique[best[0]]
+            raw=str(ad.get('model','')).strip().casefold()
+            exact={node.key:node for node in unique.values() if raw in (node.slug.casefold(),node.name.casefold())}
+            return next(iter(exact.values())) if len(exact)==1 else None
         title = ad.get('name','')
         for make_alias in sorted(aliases(make),key=len,reverse=True):
             make_match = prefix(title,make_alias)
             if not make_match:
                 continue
-            tail = title[make_match.end():].lstrip()
+            tail = title[make_match.end():].lstrip(' ()-_')
             for model_alias,model in self.model_prefixes.get(make.key,[]):
                 if prefix(tail,model_alias):
                     raw = canonical(ad.get('model',''))
                     # Repair numeric source IDs and engine suffixes, never contradict a model.
-                    if not raw or raw.isdigit() or any(raw.startswith(canonical(a)) for a in aliases(model)):
+                    parts = re.split(r'\s+',make_alias.strip(),maxsplit=1)
+                    old_split = canonical(parts[1]) if len(parts)>1 and canonical(ad.get('brand',''))==canonical(parts[0]) else ''
+                    repaired = raw[len(old_split):] if old_split and raw.startswith(old_split) else raw
+                    if not repaired or (not old_split and raw.isdigit() and len(raw)>=6) or any(repaired.startswith(canonical(a)) for a in aliases(model)):
                         return self.canonical_model(model)
                     return None
         return None
@@ -187,7 +244,7 @@ class GenerationIndex:
             make_match = prefix(title,make_alias)
             if not make_match:
                 continue
-            tail = title[make_match.end():].lstrip()
+            tail = title[make_match.end():].lstrip(' ()-_')
             for model_alias in sorted(aliases(model),key=len,reverse=True):
                 model_match = prefix(tail,model_alias)
                 if model_match:
@@ -210,7 +267,7 @@ class GenerationIndex:
         previous_url = previous.get('url') if not previous.get('label') or previous.get('label') == label else ''
         url = generation_url or previous_url or ''
         evidence = {'version':VERSION,'source':ad.get('platform',''),'label':label[:1000],'url':url,
-                    'status':'unknown','method':'','candidate_keys':[]}
+                    'status':'unknown','method':'','candidate_keys':[],'model_key':model.key if model else ''}
         ad['generation_key'] = ''
         ad['generation_evidence'] = evidence
         # Raw source labels survive an ambiguous or conflicting normalization.
@@ -231,6 +288,15 @@ class GenerationIndex:
                 for code in self.codes_for(node, model, phase))]
             method = 'body_code'
         has_unknown_code = bool(re.search(r'\b[A-Za-z]{1,5}\s*\d+[A-Za-z]*\b',re.sub(r'\b(?:19|20)\d{2}\b','',label)))
+        source_span = SOURCE_GENERATION_PERIODS.get((model.key,ad.get('platform',''),order,phase)) if model else None
+        if not candidates and not has_unknown_code and source_span and (not span or span == source_span):
+            # A source family can cover several Drom phases. Retain boundary ambiguity.
+            catalogue_span = SOURCE_CATALOGUE_PERIODS.get((model.key, ad.get('platform',''), order, phase), source_span)
+            candidates = [node for node in nodes if
+                (node.data.get('generation_number') or ordinal(node.data.get('description',''))) == order and
+                node.data.get('year_from') is not None and node.data['year_from'] >= catalogue_span[0] and
+                (catalogue_span[1] is None or node.data.get('year_to') is not None and node.data['year_to'] <= catalogue_span[1])]
+            method = 'source_period'
         if not candidates and span and not has_unknown_code:
             candidates = [node for node in nodes if span == (node.data.get('year_from'),node.data.get('year_to'))
                 or any(span == (p.get('year_from'),p.get('year_to')) for p in node.data.get('periods',[]))]
@@ -245,14 +311,17 @@ class GenerationIndex:
                 evidence.update(status='ambiguous',method=method,candidate_keys=[node.key for node in candidates][:20])
                 return ad
         explicit_candidates = candidates
-        if method != 'catalog_url' and phase_known:
+        if method not in ('catalog_url','source_period') and phase_known:
             candidates = [node for node in candidates if facelift(node.data.get('description','')) == phase]
         year = ad.get('year')
         if str(year).isdigit():
             candidates = [node for node in candidates if
                 (not node.data.get('year_from') or int(year) >= node.data['year_from']) and
                 (not node.data.get('year_to') or int(year) <= node.data['year_to'])]
-        if explicit_candidates and not candidates and method in ('catalog_url','catalog_label','body_code','label_range'):
+            if method == 'source_period' and source_span and (int(year) < source_span[0] or
+                    source_span[1] is not None and int(year) > source_span[1]):
+                candidates = []
+        if explicit_candidates and not candidates and method in ('catalog_url','catalog_label','body_code','label_range','source_period'):
             evidence.update(status='conflict',method=method,candidate_keys=[node.key for node in explicit_candidates][:20])
             return ad
         evidence['candidate_keys'] = [node.key for node in candidates][:20]

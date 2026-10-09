@@ -18,7 +18,9 @@ from dotenv import load_dotenv
 
 from commands import start_command, monitor_commands, filters_command
 from handlers import monitoring_handler, filters_handler
-from bot.handlers import text_search
+from bot.handlers import text_search, result_browser, tracking
+from bot.tracking import tracking_loop
+from bot.live_results import live_results_loop
 from handlers import vehicle_search
 from callbacks import filters_callback, filters_check_callback
 from ads_sender import main as start_ads_sender
@@ -48,8 +50,7 @@ async def set_commands(bot: Bot):
         BotCommand(command="results", description="Результаты поиска"),
         BotCommand(command="status", description="Состояние источников"),
         BotCommand(command="start", description="Запустить бота"),
-        BotCommand(command="notifications_on", description="Включить уведомления"),
-        BotCommand(command="notifications_off", description="Выключить уведомления"),
+        BotCommand(command="tracking", description="Отслеживаемые машины и частота проверки"),
         BotCommand(command="filters", description="Настроить фильтры"),
     ]
     await bot.set_my_commands(commands, scope=BotCommandScopeDefault())
@@ -63,7 +64,9 @@ async def main():
         await set_commands(bot)
         
         dp.include_routers(
+            tracking.router,
             text_search.router,
+            result_browser.router,
             vehicle_search.router,
             start_command.router,
             monitor_commands.router,
@@ -77,6 +80,8 @@ async def main():
         await bot.delete_webhook(drop_pending_updates=False)
         await asyncio.gather(
             dp.start_polling(bot),
+            live_results_loop(bot),
+            tracking_loop(bot),
             start_broadcast_sender(bot),
             start_ads_sender(),
         )

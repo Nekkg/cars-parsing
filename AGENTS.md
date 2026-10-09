@@ -1,11 +1,9 @@
-# Scope of this project
+# Development scope
 
-- Focus development and verification on the Telegram bot and its shared collectors/data services.
-- The legacy website is frozen at the user's explicit request. Do not edit its views,
-  templates, forms, URLs, static assets or frontend. Do not fix website-only failures.
-- A possible future React Telegram Web App is deferred; do not start that work without
-  a new user request. Shared backend changes needed by the bot remain in scope.
-- User-facing language uses «Уведомления», not «Мониторинг». Preserve legacy commands
-  as compatibility aliases where useful.
-- Do not reconnect or push to the original BottecRu GitHub repository. The user will
-  provide their own GitHub destination later. Preserve upstream license/attribution.
+- Develop the Telegram bot, website and their shared data/collector services.
+- The user's October 8 request explicitly reopened website development. Reuse the
+  bot's normalization, catalogue, geography and collection queue for web searches.
+- A React Telegram Web App is optional future work; the current website uses Django.
+- Use «Уведомления» in user-facing text. Legacy monitor commands may remain aliases.
+- Do not reconnect or push to BottecRu. Keep existing license/attribution and history.
+- Keep credentials, proxy configuration and browser sessions local and out of Git.

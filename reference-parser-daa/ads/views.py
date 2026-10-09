@@ -1,215 +1,181 @@
-from django.shortcuts import render
-from django.db.models import Q
-from django.core.paginator import Paginator, EmptyPage, PageNotAnInteger
-from .models import Advertisement, CatalogNode
-from .catalog import load_children, vehicle_path
-from .search import enqueue, matches
-from django.http import JsonResponse
-from .forms import AdvertisementFilterForm
-from datetime import datetime, timedelta
+"""Local multi-source search: session isolation, CSRF protected requests, partial results."""
+import json
+from datetime import timedelta
+from difflib import SequenceMatcher
+from functools import lru_cache
+from django.core.cache import cache
+from django.http import JsonResponse, Http404
+from django.shortcuts import render, get_object_or_404
+from django.utils import timezone
+from django.utils.crypto import salted_hmac
+from django.views.decorators.csrf import ensure_csrf_cookie
+from django.views.decorators.http import require_GET, require_POST
+from .models import Advertisement, CatalogNode, WebSearch
+from .catalog import load_children
+from .catalog_search import ranked_rows
+from .forms import WebSearchForm, FILTER_CHOICES
+from .filter_schema import FILTER_LABELS, INPUT_ALIASES
+from .geography import cities, norm, ALIASES
+from .search import enqueue, SORT_FIELDS
+from .web_search import result_snapshot, stored_snapshot, public_ad, expire_owner_searches
 
+
+def failure(message, status=400, errors=None):
+    return JsonResponse({'error': message, 'errors': errors or {}}, status=status)
+
+
+def payload(request):
+    if len(request.body) > 8192:
+        raise ValueError('Слишком много данных в запросе.')
+    try:
+        data = json.loads(request.body)
+    except (ValueError, UnicodeDecodeError):
+        raise ValueError('Не удалось прочитать запрос.') from None
+    if not isinstance(data, dict): raise ValueError('Ожидались поля поиска.')
+    return data
+
+
+def owner_key(request, create=False):
+    if not request.session.session_key and create:
+        request.session.create()
+    return salted_hmac('web-search-owner', request.session.session_key, algorithm='sha256').hexdigest() if request.session.session_key else None
+
+
+def owned_search(request, search_id):
+    return get_object_or_404(WebSearch.objects.select_related('search_job'), pk=search_id, owner_key=owner_key(request))
+
+
+@require_GET
+@ensure_csrf_cookie
 def index(request):
-    """
-    View for the main page with advertisements and filtering
-    """
-    # Get all advertisements
-    advertisements = Advertisement.objects.all().order_by('-last_seen')
-    search_state = {}
-    node = None
-    node_id = request.GET.get('vehicle_generation') or request.GET.get('vehicle_model') or request.GET.get('vehicle_make')
-    if node_id and node_id.isdigit():
-        node = CatalogNode.objects.filter(pk=node_id).first()
-    if node:
-        vehicle = {kind: {'name': item.name, 'slug': item.slug, **item.data} for kind,item in vehicle_path(node).items()}
-        filters = {'vehicle':vehicle, 'platform':request.GET.getlist('platform')}
-        for name in ('price','year'):
-            lower,upper = request.GET.get(name+'_min'),request.GET.get(name+'_max')
-            if lower or upper:
-                filters[name] = f'{lower or 0}-{upper or 999999999}'
-        if request.GET.get('city'):
-            filters['city'] = [request.GET['city']]
-        job = enqueue(filters,refresh=request.GET.get('collect') == '1')
-        search_state = job.source_state
-        ids = [ad.pk for ad in advertisements.iterator() if matches(ad.__dict__,filters)]
-        advertisements = advertisements.filter(pk__in=ids)
-    
-    # Get selected platforms from request
-    selected_platforms = request.GET.getlist('platform')
-    
-    # Apply filters
-    form = AdvertisementFilterForm(request.GET)
-    if form.is_valid():
-        # Platform filter
-        platform = form.cleaned_data.get('platform')
-        if platform:
-            advertisements = advertisements.filter(platform__in=platform)
-        
-        # Brand filter
-        brand = form.cleaned_data.get('brand')
-        if brand:
-            # Changed from iexact to icontains to match partial brand names
-            advertisements = advertisements.filter(brand__icontains=brand)
-        
-        # City filter (case-insensitive partial match)
-        city = form.cleaned_data.get('city')
-        city_select = form.cleaned_data.get('city_select')
-        
-        # Create a filter for city (from either text input or dropdown)
-        city_filter = Q()
-        if city:
-            city_filter |= Q(city__icontains=city)
-        if city_select:
-            city_filter |= Q(city__icontains=city_select)
-        
-        # Apply city filter if any city criteria was provided
-        if city or city_select:
-            advertisements = advertisements.filter(city_filter)
-        
-        # Price filters
-        price_range = form.cleaned_data.get('price_range')
-        price_min = form.cleaned_data.get('price_min')
-        price_max = form.cleaned_data.get('price_max')
-        
-        if price_range:
-            min_price, max_price = price_range.split('-')
-            min_price = int(min_price) if min_price else None
-            max_price = int(max_price) if max_price else None
-            
-            if min_price is not None and max_price is not None:
-                advertisements = advertisements.filter(price__range=(min_price, max_price))
-            elif min_price is not None:
-                advertisements = advertisements.filter(price__gte=min_price)
-            elif max_price is not None:
-                advertisements = advertisements.filter(price__lte=max_price)
-        elif price_min is not None or price_max is not None:
-            if price_min is not None:
-                advertisements = advertisements.filter(price__gte=price_min)
-            if price_max is not None:
-                advertisements = advertisements.filter(price__lte=price_max)
-        
-        # Year filters
-        year_min = form.cleaned_data.get('year_min')
-        year_max = form.cleaned_data.get('year_max')
-        
-        if year_min or year_max:
-            # Convert year as string to int for comparison
-            if year_min:
-                year_min_str = str(year_min)
-                advertisements = advertisements.filter(
-                    Q(year__gte=year_min_str) | Q(year__regex=r'^\d{4}', year__gte=year_min_str)
-                )
-            if year_max:
-                year_max_str = str(year_max)
-                advertisements = advertisements.filter(
-                    Q(year__lte=year_max_str) | Q(year__regex=r'^\d{4}', year__lte=year_max_str)
-                )
-        
-        # Mileage filter
-        mileage_range = form.cleaned_data.get('mileage_range')
-        if mileage_range:
-            min_mileage, max_mileage = mileage_range.split('-')
-            min_mileage = int(min_mileage) if min_mileage else None
-            max_mileage = int(max_mileage) if max_mileage else None
-            
-            if min_mileage is not None and max_mileage is not None:
-                advertisements = advertisements.filter(mileage__range=(min_mileage, max_mileage))
-            elif min_mileage is not None:
-                advertisements = advertisements.filter(mileage__gte=min_mileage)
-            elif max_mileage is not None:
-                advertisements = advertisements.filter(mileage__lte=max_mileage)
-        
-        # Car details filters - changed all to icontains for partial matching
-        body_type = form.cleaned_data.get('body_type')
-        if body_type:
-            advertisements = advertisements.filter(body_type__icontains=body_type)
-            
-        engine = form.cleaned_data.get('engine')
-        if engine:
-            advertisements = advertisements.filter(engine__icontains=engine)
-            
-        gearbox = form.cleaned_data.get('gearbox')
-        if gearbox:
-            advertisements = advertisements.filter(gearbox__icontains=gearbox)
-            
-        drive = form.cleaned_data.get('drive')
-        if drive:
-            advertisements = advertisements.filter(drive__icontains=drive)
-            
-        steering = form.cleaned_data.get('steering')
-        if steering:
-            advertisements = advertisements.filter(steering__icontains=steering)
-            
-        color = form.cleaned_data.get('color')
-        if color:
-            # Handle both 'е' and 'ё' variants in color names
-            # Create a Q object for the partial lowercase match
-            color_filter = Q(color__icontains=color)
-            # Add another condition for the alternative spelling
-            if 'е' in color:
-                alt_color = color.replace('е', 'ё')
-                color_filter |= Q(color__icontains=alt_color)
-            elif 'ё' in color:
-                alt_color = color.replace('ё', 'е')
-                color_filter |= Q(color__icontains=alt_color)
-            
-            advertisements = advertisements.filter(color_filter)
-            
-        seller = form.cleaned_data.get('seller')
-        if seller:
-            advertisements = advertisements.filter(seller__icontains=seller)
-        
-        # Date filters
-        date_min = form.cleaned_data.get('date_min')
-        date_max = form.cleaned_data.get('date_max')
-        
-        if date_min:
-            advertisements = advertisements.filter(published_at__date__gte=date_min)
-        
-        if date_max:
-            # Include the whole day
-            next_day = date_max + timedelta(days=1)
-            advertisements = advertisements.filter(published_at__date__lt=next_day)
-    
-    # Paginate results
-    paginator = Paginator(advertisements, 24)  # 24 ads per page
-    page = request.GET.get('page')
-    try:
-        ads_page = paginator.page(page)
-    except PageNotAnInteger:
-        ads_page = paginator.page(1)
-    except EmptyPage:
-        ads_page = paginator.page(paginator.num_pages)
-    
-    # Stats for displaying on the page
-    stats = {
-        'total_ads': advertisements.count(),
-        'unique_brands': advertisements.values_list('brand', flat=True).distinct().count(),
-        'price_range': {
-            'min': advertisements.order_by('price').first().price if advertisements else 0,
-            'max': advertisements.order_by('-price').first().price if advertisements else 0,
-        }
-    }
-    
-    return render(request, 'ads/index.html', {
-        'form': form,
-        'advertisements': ads_page,
-        'stats': stats,
-        'selected_platforms': selected_platforms,
-        'search_state': search_state,
-    })
+    current = request.session.get('web_search_id')
+    search = WebSearch.objects.filter(pk=current, owner_key=owner_key(request)).first() if current else None
+    return render(request, 'ads/index.html', {'search_id':str(search.pk) if search else None,
+        'filter_choices': FILTER_CHOICES,
+        'filter_fields':[dict(name=field,label=FILTER_LABELS[field],options=choices,aliases=INPUT_ALIASES.get(field,{})) for field,choices in FILTER_CHOICES.items()]})
 
 
+@require_GET
 def catalog_options(request):
+    parent_id = request.GET.get('parent')
+    if parent_id and not parent_id.isdigit(): return failure('Некорректный раздел каталога.')
+    parent = get_object_or_404(CatalogNode, pk=parent_id) if parent_id else None
+    if parent and parent.kind == 'generation': return failure('У поколения нет дочерних вариантов.')
+    query = request.GET.get('q', '')[:80]
     try:
-        parent = int(request.GET.get('parent','0')) or None
-        nodes = load_children(parent)
-        return JsonResponse({'items':[{'id':node.pk,'name':node.name,'kind':node.kind} for node in nodes]})
+        children = load_children(parent.pk if parent else None)
     except Exception:
-        return JsonResponse({'error':'Справочник временно недоступен. Повторите позже.'},status=503)
+        return failure('Каталог временно недоступен. Попробуйте ещё раз.', 503)
+    make = parent if parent and parent.kind == 'make' else parent.parent if parent else None
+    rows = ranked_rows(children, query, make_slug=make.slug if make else '')
+    # Generations are always returned in full, in production order.
+    limit = 100 if parent and parent.kind == 'model' else 40
+    return JsonResponse({'options':[dict(id=n.pk, name=n.name, kind=n.kind, key=n.key,
+        year_from=n.data.get('year_from'), year_to=n.data.get('year_to')) for n in rows[:limit]]})
 
+
+@lru_cache(maxsize=256)
+def city_suggestions(query):
+    """Bounded cache for the immutable local city directory, shared by sessions."""
+    key = norm(query)
+    target = norm(ALIASES.get(query.strip().casefold(), query))
+    popular = ('Москва','Санкт-Петербург','Самара','Казань','Екатеринбург','Нижний Новгород','Новосибирск','Краснодар')
+    scored = []
+    for c in cities():
+        name = norm(c['name'])
+        score = 4 if name == target else 3 if name.startswith(target) else 2 if target in name else 0
+        if key and not score and len(key) >= 3:
+            ratio = SequenceMatcher(None, target, name).ratio()
+            score = ratio if ratio >= .75 else 0
+        if key and not score: continue
+        priority = popular.index(c['name']) if c['name'] in popular else len(popular)
+        scored.append((-score, priority, c['name'], c['region'], c['id'], c))
+    return [dict(id=c['id'], name=c['name'], region=c['region']) for *_, c in sorted(scored)[:20]]
+
+
+@require_GET
+def city_options(request):
+    query = request.GET.get('q', '')[:100].strip().casefold()
+    return JsonResponse({'options':city_suggestions(query)})
+
+
+@require_POST
+def parse_query(request):
+    try:
+        data = payload(request)
+        text = data.get('text')
+        if not isinstance(text, str) or not text.strip(): raise ValueError('Напишите автомобиль и условия поиска.')
+        from .vehicle_query import resolve_query
+        resolved = resolve_query(text)
+        if not resolved: return failure('Не удалось распознать автомобиль. Уточните марку и модель или используйте фильтры.')
+        model_ids = [pk for pk, name in resolved['models']]
+        models = CatalogNode.objects.filter(pk__in=model_ids).select_related('parent')
+        by_id = {n.pk:n for n in models}
+        resolved['models'] = [dict(id=pk, name=name, make_id=by_id[pk].parent_id, make_name=by_id[pk].parent.name)
+                               for pk, name in resolved['models'] if pk in by_id]
+        if not resolved['models'] and resolved['model_text']:
+            return failure('Модель не найдена. Уточните написание или выберите её в фильтрах.')
+        return JsonResponse(resolved)
+    except ValueError as error:
+        return failure(str(error))
+    except Exception:
+        return failure('Не удалось загрузить каталог. Попробуйте ещё раз.', 503)
+
+
+@require_POST
+def create_search(request):
+    try: data = payload(request)
+    except ValueError as error: return failure(str(error))
+    owner = owner_key(request, create=True)
+    throttle = 'web-search-rate:'+owner
+    if not cache.add(throttle, 1, 60):
+        if cache.incr(throttle) > 15:
+            return failure('Слишком частые поиски. Подождите минуту.', 429)
+    form = WebSearchForm(data)
+    if not form.is_valid(): return failure('Проверьте условия поиска.', errors=dict(form.errors))
+    job = enqueue(form.filters)
+    expire_owner_searches(owner)
+    search = WebSearch.objects.create(owner_key=owner, search_job=job, filters=form.filters,
+                                    collect_until=timezone.now()+timedelta(minutes=30))
+    request.session['web_search_id'] = str(search.pk)
+    return JsonResponse(result_snapshot(search), status=201)
+
+
+def result_options(request):
+    sort_order = request.GET.get('sort', 'newest')
+    platform = request.GET.get('platform', 'all')
+    if sort_order not in SORT_FIELDS or platform not in ('all','avito','autoru','drom'):
+        raise ValueError('Неподдерживаемый порядок или площадка.')
+    try: page = max(1, min(100000, int(request.GET.get('page', 1))))
+    except (TypeError, ValueError): raise ValueError('Некорректный номер страницы.') from None
+    return sort_order, platform, page
+
+
+@require_GET
+def stored_feed(request):
+    try: options = result_options(request)
+    except ValueError as error: return failure(str(error))
+    return JsonResponse(stored_snapshot(*options))
+
+
+@require_GET
+def search_results(request, search_id):
+    search = owned_search(request, search_id)
+    try: options = result_options(request)
+    except ValueError as error: return failure(str(error))
+    return JsonResponse(result_snapshot(search, *options))
+
+
+@require_POST
+def refresh_search(request, search_id):
+    search = owned_search(request, search_id)
+    search.search_job = enqueue(search.filters)
+    search.collect_until = timezone.now()+timedelta(minutes=30)
+    search.save(update_fields=['search_job','collect_until'])
+    return JsonResponse({'ok':True})
+
+
+@require_GET
 def ad_detail(request, ad_id):
-    """
-    View for a single advertisement
-    """
-    ad = Advertisement.objects.get(ad_id=ad_id)
-    return render(request, 'ads/detail.html', {'ad': ad})
+    ad = get_object_or_404(Advertisement, ad_id=ad_id)
+    return render(request, 'ads/detail.html', {'car':public_ad(ad), 'ad':ad})

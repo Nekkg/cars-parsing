@@ -1,4 +1,5 @@
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from ads.filter_schema import FILTER_OPTIONS
 
 
 FILTER_MAPPING_KB = {
@@ -39,36 +40,18 @@ FILTER_MAPPING_KB = {
         "Volkswagen",
         "Volvo"
     ],
-    "Двигатель": [
-        "бензин", 
-        "дизель", 
-        "гибрид", 
-        "газ",
-        "электро",
-    ],
+    "Двигатель": list(FILTER_OPTIONS['engine']),
     "Пробег": None,
-    "Коробка": ["автомат", "механика", "робот", "вариатор"],
+    "Коробка": list(FILTER_OPTIONS['gearbox']),
     "Кол-во владельцев": None,
-    "Состояние": ["не битый", "битый"],
-    "Продавец": ["частное лицо", "автодилер"],
+    "Состояние": list(FILTER_OPTIONS['condition']),
+    "Продавец": list(FILTER_OPTIONS['seller']),
     "Город": None,
     "Год выпуска": None,
-    "Тип кузова": [
-        "седан",
-        "хетчбек",
-        "универсал",
-        "кабриолет",
-        "внедорожник",
-        "минивэн",
-        "купе",
-        "пикап",
-        "микроавтобус",
-        "лифтбек",
-        "фургон",
-    ],
+    "Тип кузова": list(FILTER_OPTIONS['body_type']),
     "Цвет кузова": None,
-    "Привод": ["полный", "передний", "задний"],
-    "Руль": ["левый", "правый"],
+    "Привод": list(FILTER_OPTIONS['drive']),
+    "Руль": list(FILTER_OPTIONS['steering']),
 }
 
 # 36 крупнейших городов России
@@ -129,7 +112,7 @@ def filter_keyboard(filter_name: str, selected_values=None, page=1) -> InlineKey
     return None
 
 
-def city_keyboard(selected_values=None) -> InlineKeyboardMarkup:
+def city_keyboard(selected_values=None, radius_km=0) -> InlineKeyboardMarkup:
     """Создаёт клавиатуру с популярными городами"""
     if selected_values is None:
         selected_values = []
@@ -152,6 +135,10 @@ def city_keyboard(selected_values=None) -> InlineKeyboardMarkup:
             inline_keyboard.append(row)
             row = []
     
+    inline_keyboard.append([
+        InlineKeyboardButton(text=('✓ ' if radius_km == km else '') + ('Только город' if km == 0 else f'+{km} км'),
+                             callback_data=f'city:radius:{km}') for km in (0, 100, 200, 500)
+    ])
     # Добавляем кнопку очистки и возврата к фильтрам
     inline_keyboard.append([InlineKeyboardButton(
         text="Очистить фильтр",
@@ -165,7 +152,7 @@ def city_keyboard(selected_values=None) -> InlineKeyboardMarkup:
     
     # Добавляем кнопку для ввода своего города
     inline_keyboard.append([InlineKeyboardButton(
-        text="✏️ Ввести свой город",
+        text="✏️ Город и радиус",
         callback_data="enter_custom_city",
     )])
     

@@ -67,6 +67,8 @@ def ranked_rows(rows, query='', popular_only=False, make_slug=''):
             names.update(normalize(alias) for alias in ALIASES.get(key, ()))
         priority = priorities.get(key, len(POPULAR)) if row.kind == 'make' else len(POPULAR)
         if row.kind == 'model':
+            from .query_language import model_aliases
+            names.update(normalize(alias) for alias in model_aliases(row))
             models = [normalize(v) for v in MODEL_PRIORITIES.get(normalize(make_slug), ())]
             priority = models.index(key) if key in models else len(models)
         if row.kind == 'generation':

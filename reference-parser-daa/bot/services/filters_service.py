@@ -52,6 +52,12 @@ async def update_user_filter(user_id: int, field: str, value):
     filters.search_job = None
     if field == 'brand':
         filters.vehicle = None
+        filters.generation_hint = ''
+        filters.generation_keys = []
+        filters.variant = ''
+    if field == 'city':
+        filters.radius_km = 0
+        filters.location = {}
     
     # Получаем объект поля по его имени
     model_field = UserFilters._meta.get_field(field)
@@ -91,6 +97,12 @@ async def clear_user_filter(user_id: int, field: str):
     filters.search_job = None
     if field == 'brand':
         filters.vehicle = None
+        filters.generation_hint = ''
+        filters.generation_keys = []
+        filters.variant = ''
+    if field == 'city':
+        filters.radius_km = 0
+        filters.location = {}
     
     # Получаем информацию о поле из модели
     field_type = UserFilters._meta.get_field(field)
@@ -108,3 +120,24 @@ async def clear_user_filter(user_id: int, field: str):
     await filters.asave()
     if await User.objects.filter(user_id=user_id, monitoring_enabled=True).aexists():
         await sync_to_async(request_search)(filters)
+
+@sync_to_async
+def update_user_location(user_id, location, radius_km=0):
+    """Update the location constraint together without touching the vehicle or saved tracking."""
+    from django.db import transaction
+    from ads.geography import cities
+    from ads.models import ResultView
+    if not isinstance(radius_km, int) or isinstance(radius_km, bool) or not 0 <= radius_km <= 1000:
+        raise ValueError('Радиус должен быть от 0 до 1000 км.')
+    origin = next((city for city in cities() if city['id'] == location.get('id')), None)
+    if origin is None:
+        raise ValueError('Город отсутствует в справочнике. Выберите его заново.')
+    with transaction.atomic():
+        filters, _ = UserFilters.objects.select_for_update().get_or_create(user_id=user_id)
+        filters.city = [origin['name']]
+        filters.location = origin
+        filters.radius_km = radius_km
+        filters.search_job = None
+        filters.save(update_fields=['city', 'location', 'radius_km', 'search_job'])
+        User.objects.filter(user_id=user_id).update(monitoring_enabled=False)
+        ResultView.objects.filter(user_id=user_id,live_until__isnull=False).update(live_until=None,collect_until=None)

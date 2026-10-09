@@ -1,172 +1,136 @@
+"""Validated web inputs; no whole-advertisement-table choice queries."""
+from types import SimpleNamespace
+from datetime import date
 from django import forms
-from .models import Advertisement
+from .models import CatalogNode
+from .geography import cities, parse_city_input
+from .query_language import money
+from .search import snapshot
+from .filter_schema import FILTER_OPTIONS, FILTER_LABELS, INPUT_ALIASES
 
-class AdvertisementFilterForm(forms.Form):
-    PRICE_CHOICES = [
-        ('', 'Любая цена'),
-        ('0-500000', 'до 500 000 ₽'),
-        ('500000-1000000', '500 000 - 1 000 000 ₽'),
-        ('1000000-1500000', '1 000 000 - 1 500 000 ₽'),
-        ('1500000-2000000', '1 500 000 - 2 000 000 ₽'),
-        ('2000000-3000000', '2 000 000 - 3 000 000 ₽'),
-        ('3000000-0', 'от 3 000 000 ₽'),
-    ]
-    
-    MILEAGE_CHOICES = [
-        ('', 'Любой пробег'),
-        ('0-10000', 'до 10 000 км'),
-        ('10000-50000', '10 000 - 50 000 км'),
-        ('50000-100000', '50 000 - 100 000 км'),
-        ('100000-150000', '100 000 - 150 000 км'),
-        ('150000-0', 'от 150 000 км'),
-    ]
-    
-    # Get unique values for dynamic dropdowns
-    @staticmethod
-    def get_unique_values(field):
-        # Get all distinct values for the field
-        values = Advertisement.objects.values_list(field, flat=True).distinct()
-        
-        # Process values: convert to lowercase, replace 'ё' with 'е', filter out empty values
-        normalized_values = []
-        for v in values:
-            if v and v != 'unknown':
-                # Convert to lowercase and replace ё with е
-                normalized_v = v.lower().replace('ё', 'е')
-                normalized_values.append(normalized_v)
-        
-        # Remove duplicates using set
-        unique_values = list(set(normalized_values))
-        
-        # Sort the values
-        unique_values.sort()
-        
-        # Format as (value, value) tuples for form choices with proper capitalization
-        return [(v, v.capitalize()) for v in unique_values]
-    
-    # Search fields
-    city = forms.CharField(
-        required=False, 
-        widget=forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'Введите город'})
-    )
-    
-    city_select = forms.ChoiceField(
-        required=False,
-        choices=[('', 'Выберите город')],  # Will be populated dynamically
-        widget=forms.Select(attrs={'class': 'form-select'})
-    )
-    
-    # Filter fields
-    platform = forms.MultipleChoiceField(
-        required=False,
-        choices=[('avito', 'Avito'), ('drom', 'Drom'), ('autoru', 'Auto.ru')],
-        widget=forms.SelectMultiple(attrs={'class': 'form-select'})
-    )
-    
-    brand = forms.ChoiceField(
-        required=False,
-        choices=[('', 'Все марки')],  # Will be populated dynamically
-        widget=forms.Select(attrs={'class': 'form-select'})
-    )
-    
-    price_range = forms.ChoiceField(
-        required=False,
-        choices=PRICE_CHOICES,
-        widget=forms.Select(attrs={'class': 'form-select'})
-    )
-    
-    price_min = forms.IntegerField(
-        required=False,
-        widget=forms.NumberInput(attrs={'class': 'form-control', 'placeholder': 'От'})
-    )
-    
-    price_max = forms.IntegerField(
-        required=False,
-        widget=forms.NumberInput(attrs={'class': 'form-control', 'placeholder': 'До'})
-    )
-    
-    year_min = forms.IntegerField(
-        required=False,
-        min_value=1900,
-        max_value=2100,
-        widget=forms.NumberInput(attrs={'class': 'form-control', 'placeholder': 'От'})
-    )
-    
-    year_max = forms.IntegerField(
-        required=False,
-        min_value=1900,
-        max_value=2100,
-        widget=forms.NumberInput(attrs={'class': 'form-control', 'placeholder': 'До'})
-    )
-    
-    mileage_range = forms.ChoiceField(
-        required=False,
-        choices=MILEAGE_CHOICES,
-        widget=forms.Select(attrs={'class': 'form-select'})
-    )
-    
-    body_type = forms.ChoiceField(
-        required=False,
-        choices=[('', 'Любой тип кузова')],  # Will be populated dynamically
-        widget=forms.Select(attrs={'class': 'form-select'})
-    )
-    
-    engine = forms.ChoiceField(
-        required=False,
-        choices=[('', 'Любой двигатель')],  # Will be populated dynamically
-        widget=forms.Select(attrs={'class': 'form-select'})
-    )
-    
-    gearbox = forms.ChoiceField(
-        required=False,
-        choices=[('', 'Любая КПП')],  # Will be populated dynamically
-        widget=forms.Select(attrs={'class': 'form-select'})
-    )
-    
-    drive = forms.ChoiceField(
-        required=False,
-        choices=[('', 'Любой привод')],  # Will be populated dynamically
-        widget=forms.Select(attrs={'class': 'form-select'})
-    )
-    
-    steering = forms.ChoiceField(
-        required=False,
-        choices=[('', 'Любой руль')],  # Will be populated dynamically
-        widget=forms.Select(attrs={'class': 'form-select'})
-    )
-    
-    color = forms.ChoiceField(
-        required=False,
-        choices=[('', 'Любой цвет')],  # Will be populated dynamically
-        widget=forms.Select(attrs={'class': 'form-select'})
-    )
-    
-    seller = forms.ChoiceField(
-        required=False,
-        choices=[('', 'Любой тип продавца')],  # Will be populated dynamically
-        widget=forms.Select(attrs={'class': 'form-select'})
-    )
-    
-    date_min = forms.DateField(
-        required=False,
-        widget=forms.DateInput(attrs={'class': 'form-control', 'type': 'date'})
-    )
-    
-    date_max = forms.DateField(
-        required=False,
-        widget=forms.DateInput(attrs={'class': 'form-control', 'type': 'date'})
-    )
-    
+SOURCE_CHOICES = [('avito', 'Avito'), ('autoru', 'Auto.ru'), ('drom', 'Дром')]
+FILTER_CHOICES = {field:[(v,v.capitalize()) for v in values] for field,values in FILTER_OPTIONS.items()}
+
+
+class WebSearchForm(forms.Form):
+    make_id = forms.IntegerField(required=False, min_value=1)
+    model_id = forms.IntegerField(required=False, min_value=1)
+    generation_ids = forms.Field(required=False)
+    generation_hint = forms.CharField(required=False, max_length=32)
+    variant = forms.CharField(required=False, max_length=60)
+    city = forms.CharField(required=False, max_length=150)
+    city_id = forms.CharField(required=False, max_length=50)
+    radius_km = forms.IntegerField(required=False, min_value=0, max_value=1000)
+    price_min = forms.CharField(required=False, max_length=30)
+    price_max = forms.CharField(required=False, max_length=30)
+    year_min = forms.IntegerField(required=False, min_value=1900, max_value=date.today().year+1)
+    year_max = forms.IntegerField(required=False, min_value=1900, max_value=date.today().year+1)
+    mileage_min = forms.CharField(required=False, max_length=30)
+    mileage_max = forms.CharField(required=False, max_length=30)
+    owners_min = forms.IntegerField(required=False, min_value=0, max_value=99)
+    owners_max = forms.IntegerField(required=False, min_value=0, max_value=99)
+    color_custom = forms.CharField(required=False, max_length=150)
+    platform = forms.MultipleChoiceField(required=False, choices=SOURCE_CHOICES)
+    engine = forms.MultipleChoiceField(required=False, choices=FILTER_CHOICES['engine'])
+    gearbox = forms.MultipleChoiceField(required=False, choices=FILTER_CHOICES['gearbox'])
+    drive = forms.MultipleChoiceField(required=False, choices=FILTER_CHOICES['drive'])
+    body_type = forms.MultipleChoiceField(required=False, choices=FILTER_CHOICES['body_type'])
+    color = forms.MultipleChoiceField(required=False, choices=FILTER_CHOICES['color'])
+    steering = forms.MultipleChoiceField(required=False, choices=FILTER_CHOICES['steering'])
+    condition = forms.MultipleChoiceField(required=False, choices=FILTER_CHOICES['condition'])
+    seller = forms.MultipleChoiceField(required=False, choices=FILTER_CHOICES['seller'])
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        
-        # Populate dynamic choices
-        self.fields['brand'].choices = [('', 'Все марки')] + self.get_unique_values('brand')
-        self.fields['body_type'].choices = [('', 'Любой тип кузова')] + self.get_unique_values('body_type')
-        self.fields['engine'].choices = [('', 'Любой двигатель')] + self.get_unique_values('engine')
-        self.fields['gearbox'].choices = [('', 'Любая КПП')] + self.get_unique_values('gearbox')
-        self.fields['drive'].choices = [('', 'Любой привод')] + self.get_unique_values('drive')
-        self.fields['steering'].choices = [('', 'Любой руль')] + self.get_unique_values('steering')
-        self.fields['color'].choices = [('', 'Любой цвет')] + self.get_unique_values('color')
-        self.fields['seller'].choices = [('', 'Любой тип продавца')] + self.get_unique_values('seller')
-        self.fields['city_select'].choices = [('', 'Выберите город')] + self.get_unique_values('city') 
+        for field, aliases in INPUT_ALIASES.items():
+            self.fields[field].choices = [*self.fields[field].choices, *((v,v) for v in aliases)]
+
+    def clean_generation_ids(self):
+        values = self.cleaned_data['generation_ids'] or []
+        if not isinstance(values, list) or len(values) > 30:
+            raise forms.ValidationError('Выберите поколения из списка.')
+        try:
+            if any(type(v) not in (int, str) or not str(v).isdigit() or int(v) < 1 for v in values):
+                raise ValueError
+            return sorted({int(v) for v in values})
+        except (TypeError, ValueError):
+            raise forms.ValidationError('Выберите поколения из списка.') from None
+
+    def clean(self):
+        values = super().clean()
+        make = CatalogNode.objects.filter(pk=values.get('make_id'), kind='make').first()
+        model = CatalogNode.objects.filter(pk=values.get('model_id'), kind='model').select_related('parent').first()
+        if values.get('make_id') and not make:
+            self.add_error('make_id', 'Марка отсутствует в каталоге.')
+        if values.get('model_id') and (not model or not make or model.parent_id != make.pk):
+            self.add_error('model_id', 'Выберите модель выбранной марки.')
+        canonical_model = model
+        if model and model.data.get('canonical_model_key'):
+            canonical_model = CatalogNode.objects.filter(kind='model', key=model.data['canonical_model_key']).first() or model
+        generations = values.get('generation_ids', [])
+        nodes = list(CatalogNode.objects.filter(pk__in=generations, kind='generation', parent=canonical_model)) if canonical_model else []
+        if generations and len(nodes) != len(generations):
+            self.add_error('generation_ids', 'Поколения должны принадлежать выбранной модели.')
+        if values.get('generation_hint'):
+            import re
+            if not re.fullmatch(r'[A-Za-zА-Яа-я0-9 -]+', values['generation_hint']) or not model:
+                self.add_error('generation_hint', 'Код кузова требует выбранной модели.')
+        location, radius = {}, values.get('radius_km') or 0
+        try:
+            if values.get('city_id'):
+                location = next((c for c in cities() if c['id'] == values['city_id']), {})
+                if not location:
+                    raise ValueError('Выберите город из подсказок.')
+            elif values.get('city'):
+                parsed = parse_city_input(values['city'])
+                if parsed['city_choices']:
+                    raise ValueError('Есть несколько городов с таким названием. Выберите регион в подсказках.')
+                location = parsed['location']
+                radius = parsed['radius_km'] or radius
+            elif radius:
+                raise ValueError('Для радиуса сначала выберите город.')
+        except ValueError as error:
+            self.add_error('city', str(error))
+        ranges = {}
+        for field in ('price', 'year', 'mileage', 'owners'):
+            ends = []
+            for suffix in ('min', 'max'):
+                key = field+'_'+suffix
+                value = values.get(key)
+                try:
+                    value = money(value) if field in ('price','mileage') and value else value
+                    if field == 'mileage' and value not in (None, '') and value > 10_000_000:
+                        raise ValueError('Пробег должен быть не больше 10 млн км.')
+                    if value is not None and value != '' and value > 2_147_483_647:
+                        raise ValueError('Сумма должна быть не больше 2 млрд рублей.')
+                except ValueError as error:
+                    self.add_error(key, str(error)); value = None
+                ends.append(value if value != '' else None)
+            lo, hi = ends
+            if lo is not None and hi is not None and lo > hi:
+                self.add_error(field+'_max', 'Значение «до» должно быть не меньше значения «от».')
+            ranges[field] = f'{lo if lo is not None else ""}-{hi if hi is not None else ""}' if lo is not None or hi is not None else None
+        custom_colors = []
+        if values.get('color_custom'):
+            import re
+            custom_colors = [v.strip().casefold().replace('ё','е') for v in values['color_custom'].split(',') if v.strip()]
+            if len(custom_colors)>8 or any(not re.fullmatch(r'[a-zа-я -]{2,40}',v) for v in custom_colors):
+                self.add_error('color_custom', 'Укажите цвет словами, несколько цветов — через запятую.')
+        if self.errors:
+            return values
+        defaults = {key: [] for key in ('platform','brand','engine','gearbox','condition','seller','city','body_type','color','drive','steering')}
+        defaults.update(price=ranges['price'], year=ranges['year'], mileage=ranges['mileage'], owners=ranges['owners'],
+                        variant=values.get('variant',''), generation_hint=values.get('generation_hint',''),
+                        radius_km=radius, location=location, vehicle=canonical_model or make,
+                        vehicle_id=(canonical_model or make).pk if canonical_model or make else None,
+                        generation_keys=[node.key for node in nodes])
+        for field in ('platform', *FILTER_OPTIONS):
+            defaults[field] = sorted({INPUT_ALIASES.get(field, {}).get(v,v) for v in values.get(field) or []})
+        defaults['color'] = sorted(set(defaults['color']+custom_colors))
+        defaults['brand'] = [make.name.lower()] if make else []
+        defaults['city'] = [location['name']] if location else []
+        self.filters = snapshot(SimpleNamespace(**defaults))
+        # The existing collector cannot perform an unbounded all-makes search efficiently.
+        if not make:
+            self.add_error('make_id', 'Выберите марку или напишите автомобиль одной строкой.')
+        return values

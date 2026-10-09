@@ -14,7 +14,7 @@ from urllib.parse import urlparse
 
 from PIL import Image
 from parsers.avito_pow import result as endpoint_result
-from parsers.sources import SourceBlocked
+from parsers.sources import SourceBlocked, SourceTemporaryError
 
 logger = logging.getLogger(__name__)
 PROVIDER = 'https://gcaptcha4.geevisit.com'
@@ -121,7 +121,7 @@ def recover_captcha(client, response, url, deadline):
     encrypted = Signer.generate_w(task, identifier, task['captcha_type'],
                                   session=ResourceSession(client, deadline))
     if time.monotonic() >= deadline:
-        raise SourceBlocked('avito: captcha time budget exceeded')
+        raise SourceTemporaryError('avito: captcha time budget exceeded')
     callback = 'geetest_' + str(int(time.time()*1000) + secrets.randbelow(10000))
     verify = client.request('get', PROVIDER + '/verify', deadline=deadline, _challenge=True,
                             headers=provider_headers, params={'callback':callback, 'captcha_id':identifier,

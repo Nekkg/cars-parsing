@@ -114,4 +114,4 @@ class PersistenceTests(TestCase):
             Delivery.objects.create(user_id=1,advertisement=ad,price=100)
 
     def test_catalog_endpoint_handles_invalid_parent(self):
-        self.assertEqual(self.client.get('/catalog/?parent=bad').status_code,503)
+        self.assertEqual(self.client.get('/catalog/?parent=bad').status_code,400)

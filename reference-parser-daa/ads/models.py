@@ -1,5 +1,6 @@
 from django.db import models
 import json
+import uuid
 from datetime import datetime
 from django.utils import timezone
 
@@ -21,6 +22,7 @@ class CatalogNode(models.Model):
 
 
 class SearchJob(models.Model):
+    kind = models.CharField(max_length=12, default='search', choices=[('search', 'Поиск'), ('tracking', 'Отслеживание')])
     fingerprint = models.CharField(max_length=64, unique=True)
     filters = models.JSONField(default=dict)
     requested_at = models.DateTimeField(default=timezone.now)
@@ -63,6 +65,7 @@ class Advertisement(models.Model):
     price = models.IntegerField(default=0)
     city = models.CharField(max_length=200)
     image = models.URLField(max_length=500, null=True, blank=True)
+    images = models.JSONField(default=list, blank=True)
     
     # Car details
     mileage = models.IntegerField(null=True, blank=True)
@@ -80,7 +83,7 @@ class Advertisement(models.Model):
     seller = models.CharField(max_length=200, null=True, blank=True)
     
     # Timestamps - changed from auto_now_add to manually set in save method
-    created_at = models.DateTimeField()
+    created_at = models.DateTimeField(db_index=True)
     published_at = models.DateTimeField(null=True, blank=True)
     
     class Meta:
@@ -175,3 +178,34 @@ class Advertisement(models.Model):
         except Exception as e:
             print(f"Error creating/updating advertisement from Redis data: {e}")
             return None
+
+
+class ResultView(models.Model):
+    """A persistent, owner-bound result browser independent of Telegram FSM state."""
+    id = models.UUIDField(primary_key=True,default=uuid.uuid4,editable=False)
+    user_id = models.BigIntegerField(db_index=True)
+    chat_id = models.BigIntegerField()
+    message_id = models.BigIntegerField(null=True,blank=True)
+    list_message_id = models.BigIntegerField(null=True,blank=True)
+    filters = models.JSONField(default=dict)
+    result_ids = models.JSONField(default=list)
+    search_job = models.ForeignKey('SearchJob',null=True,blank=True,on_delete=models.SET_NULL)
+    collect_until = models.DateTimeField(null=True,blank=True,db_index=True)
+    live_until = models.DateTimeField(null=True,blank=True,db_index=True)
+    live_state = models.JSONField(default=dict,blank=True)
+    platform = models.CharField(max_length=20,default='all')
+    sort_order = models.CharField(max_length=20,default='newest')
+    position = models.PositiveIntegerField(default=0)
+    photo_index = models.PositiveSmallIntegerField(default=0)
+    last_photo = models.CharField(max_length=700,blank=True,default='')
+    list_page = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(default=timezone.now,db_index=True)
+
+class WebSearch(models.Model):
+    """Session-owned web view; collection joins the same queue as Telegram."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    owner_key = models.CharField(max_length=64, db_index=True)
+    search_job = models.ForeignKey(SearchJob, on_delete=models.CASCADE)
+    filters = models.JSONField(default=dict)
+    collect_until = models.DateTimeField(db_index=True)
+    created_at = models.DateTimeField(default=timezone.now, db_index=True)

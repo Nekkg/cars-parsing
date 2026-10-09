@@ -1,37 +1,29 @@
+"""Compatibility handlers for keyboards sent before saved-query tracking."""
 from aiogram import Router, F
-from aiogram.types import Message
+from asgiref.sync import sync_to_async
+from bot.handlers.tracking import offer_current
 from bot.keyboards.reply.start_kb import start_keyboard
-
-from services.monitoring_switch_service import enable_monitoring, disable_monitoring
-
-import logging
-logger = logging.getLogger(__name__)
+from bot.services.tracking_service import stop_user
 
 router = Router()
 
-@router.message(F.text.in_({"Включить уведомления","Включить мониторинг"}))
-async def start_monitoring_handler(message: Message):
-    user_id = message.from_user.id
-    await enable_monitoring(user_id=user_id)
-    logger.info(f"Monitoring is enabled for user {user_id}")
-    await message.answer("✅ Уведомления включены",reply_markup=start_keyboard)
+
+@router.message(F.text.in_({'Включить уведомления', 'Включить мониторинг'}))
+async def start_monitoring_handler(message):
+    await offer_current(message, message.from_user.id)
 
 
-@router.message(F.text.in_({"Выключить уведомления","Выключить мониторинг"}))
-async def stop_monitoring_handler(message: Message):
-    user_id = message.from_user.id
-    await disable_monitoring(user_id=user_id)
-    logger.info(f"Monitoring is disabled for user {user_id}")
-    await message.answer("❌ Уведомления выключены",reply_markup=start_keyboard)
+@router.message(F.text.in_({'Выключить уведомления', 'Выключить мониторинг'}))
+async def stop_monitoring_handler(message):
+    await sync_to_async(stop_user)(message.from_user.id)
+    await message.answer('⏸ Все отслеживания поставлены на паузу.', reply_markup=start_keyboard)
 
 
 @router.callback_query(F.data.startswith('notifications:'))
 async def notification_button(callback):
     await callback.answer()
-    if callback.data=='notifications:on':
-        await enable_monitoring(callback.from_user.id)
-        text='✅ Уведомления включены'
+    if callback.data == 'notifications:on':
+        await offer_current(callback.message, callback.from_user.id)
     else:
-        await disable_monitoring(callback.from_user.id)
-        text='❌ Уведомления выключены'
-    await callback.message.answer(text,reply_markup=start_keyboard)
+        await sync_to_async(stop_user)(callback.from_user.id)
+        await callback.message.answer('⏸ Все отслеживания поставлены на паузу.', reply_markup=start_keyboard)

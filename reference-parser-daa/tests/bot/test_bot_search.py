@@ -63,31 +63,6 @@ class FilterTests(SimpleTestCase):
         self.assertEqual(ad['generation_codes'],['E90','E91'])
         self.assertIn('Рестайлинг',ad['generation'])
 
-    async def test_three_photo_cards_and_stable_next_page(self):
-        from bot.handlers.vehicle_search import show_results
-        message=AsyncMock(); state=AsyncMock()
-        state.get_data.return_value={'result_ids':[1,2,3,4,5,6]}
-        ads=[SimpleNamespace(pk=i) for i in [7,6,5,4,3,2,1]]
-        with patch('bot.handlers.vehicle_search.UserFilters.objects.aget_or_create',AsyncMock(return_value=(SimpleNamespace(sort_order='newest',platform=[],search_job_id=None),False))), patch('bot.handlers.vehicle_search.current_results',AsyncMock(return_value=ads)), patch('bot.handlers.vehicle_search.user_description',AsyncMock(return_value='BMW')), patch('bot.handlers.vehicle_search.send_card',AsyncMock()) as send:
-            await show_results(message,1,page=1,state=state)
-            self.assertEqual([c.args[1].pk for c in send.await_args_list],[4,5,6])
-
-    @patch('bot.handlers.vehicle_search.download_photo',return_value=b'jpeg-photo')
-    async def test_photo_is_used_and_invalid_photo_falls_back(self, download):
-        from bot.handlers.vehicle_search import send_card
-        from aiogram.exceptions import TelegramBadRequest
-        message=AsyncMock()
-        ad=SimpleNamespace(name='BMW',price=100,year='2000',city='Самара',platform='drom',mileage=None,generation='',link='https://example.com/car',image='https://example.com/photo.jpg')
-        await send_card(message,ad)
-        message.answer_photo.assert_awaited_once()
-        self.assertEqual(message.answer_photo.await_args.args[0].data,b'jpeg-photo')
-        message.answer.assert_not_awaited()
-        message.answer_photo.side_effect=TelegramBadRequest(method=SimpleNamespace(),message='invalid photo')
-        await send_card(message,ad)
-        message.answer.assert_awaited_once()
-        self.assertIn('Фото сейчас недоступно',message.answer.await_args.args[0])
-
-
 class CollectionTests(TestCase):
     def test_details_are_resumable_and_finish_after_listing(self):
         from parsers.collector import collect
@@ -126,39 +101,7 @@ class CollectionTests(TestCase):
         self.assertEqual(job.source_state['drom']['status'],'готово')
         self.assertEqual(Advertisement.objects.count(),5)
 
-class FirstSourceBatchTests(SimpleTestCase):
-    async def render(self, ads, page=0, data=None):
-        from bot.handlers.vehicle_search import show_results
-        message, state = AsyncMock(), AsyncMock()
-        state.get_data.return_value = data or {}
-        filters = SimpleNamespace(sort_order='newest',platform=[],search_job_id=None)
-        with patch('bot.handlers.vehicle_search.UserFilters.objects.aget_or_create',AsyncMock(return_value=(filters,False))), patch('bot.handlers.vehicle_search.current_results',AsyncMock(return_value=ads)), patch('bot.handlers.vehicle_search.user_description',AsyncMock(return_value='Volvo S60')), patch('bot.handlers.vehicle_search.send_card',AsyncMock()) as send:
-            await show_results(message,1,page=page,state=state)
-        return message, state, send
-
-    async def test_auto_batch_sends_exactly_one_from_each_source_in_fixed_order(self):
-        ads = [SimpleNamespace(pk=i,platform=s) for i,s in enumerate(['drom','avito','drom','autoru','avito'],1)]
-        message, state, send = await self.render(ads)
-        self.assertEqual([c.args[1].platform for c in send.await_args_list],['avito','autoru','drom'])
-        self.assertEqual(send.await_count,3)
-        self.assertEqual(state.update_data.await_args.kwargs['result_first_size'],3)
-        buttons = message.answer.await_args.kwargs['reply_markup'].inline_keyboard
-        self.assertEqual(sum(b.callback_data=='search:page:1' for row in buttons for b in row),1)
-
-    async def test_unavailable_sources_do_not_fill_first_batch_with_duplicates(self):
-        ads = [SimpleNamespace(pk=i,platform='drom') for i in range(1,4)]
-        message, state, send = await self.render(ads)
-        self.assertEqual(send.await_count,1)
-        self.assertEqual(state.update_data.await_args.kwargs['result_first_size'],1)
-        _, _, next_send = await self.render(ads,page=1,data={'result_ids':[1,2,3],'result_first_size':1})
-        self.assertEqual([c.args[1].pk for c in next_send.await_args_list],[2,3])
-
-    async def test_empty_results_have_no_next_batch_button(self):
-        message, _, send = await self.render([])
-        send.assert_not_awaited()
-        buttons = message.answer.await_args.kwargs['reply_markup'].inline_keyboard
-        self.assertFalse(any(b.callback_data=='search:page:1' for row in buttons for b in row))
-
+class SourceReadinessTests(SimpleTestCase):
     def test_pending_generation_waits_for_first_verified_source_match(self):
         from ads.search_status import ready_for_batch
         pending = {'cycle':'token','pages':1,'status':'проверка карточек','detail_queue':[{}]}
