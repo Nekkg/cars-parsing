@@ -1,8 +1,6 @@
 from pathlib import Path
-from dotenv import load_dotenv
 import os
 
-load_dotenv(os.getenv('CARS_ENV_FILE') or Path(__file__).resolve().parent.parent / '.env', encoding='utf-8')
 from core.config import required_env, env_port
 
 

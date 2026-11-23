@@ -1,5 +1,7 @@
 """Local multi-source search: session isolation, CSRF protected requests, partial results."""
 import json
+import logging
+import os
 from datetime import timedelta
 from difflib import SequenceMatcher
 from functools import lru_cache
@@ -18,6 +20,8 @@ from .filter_schema import FILTER_LABELS, INPUT_ALIASES
 from .geography import cities, norm, ALIASES
 from .search import enqueue, SORT_FIELDS
 from .web_search import result_snapshot, stored_snapshot, public_ad, expire_owner_searches
+
+logger = logging.getLogger(__name__)
 
 
 def failure(message, status=400, errors=None):
@@ -64,8 +68,10 @@ def catalog_options(request):
     query = request.GET.get('q', '')[:80]
     try:
         children = load_children(parent.pk if parent else None)
-    except Exception:
-        return failure('Каталог временно недоступен. Попробуйте ещё раз.', 503)
+    except Exception as error:
+        logger.warning('Catalogue unavailable: error=%s source_proxy_configured=%s',
+                       type(error).__name__, bool(os.getenv('SOURCES_PROXY_URL', '').strip()))
+        return failure('Каталог временно недоступен. Проверьте интернет и настройки прокси в .env.', 503)
     make = parent if parent and parent.kind == 'make' else parent.parent if parent else None
     rows = ranked_rows(children, query, make_slug=make.slug if make else '')
     # Generations are always returned in full, in production order.

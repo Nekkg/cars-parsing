@@ -23,8 +23,8 @@ def stop_collector(process):
 
 
 def prepare():
-    from dotenv import load_dotenv
-    load_dotenv(os.getenv('CARS_ENV_FILE') or Path(__file__).resolve().parent.parent / '.env', encoding='utf-8')
+    from core.config import load_configuration
+    load_configuration()
     os.environ.setdefault('CARS_DATABASE', 'sqlite')
     os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'core.settings')
     import django

@@ -1,15 +1,9 @@
 import asyncio
 import logging
-import os
-from dotenv import load_dotenv
 from django.db import close_old_connections
 from aiogram.types import FSInputFile
 from io import BytesIO
 from bot.services.broadcast_service import get_broadcast_messages, get_users
-
-load_dotenv()
-
-TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 
 # Функция для отправки сообщений
 async def send_message(bot, user_id, text=None, file=None, media_type=None):

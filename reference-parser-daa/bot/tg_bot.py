@@ -14,8 +14,6 @@ from aiogram.client.bot import DefaultBotProperties
 from aiogram.types import BotCommand, BotCommandScopeDefault
 from core.network import telegram_session
 
-from dotenv import load_dotenv
-
 from bot.commands import start_command, monitor_commands, filters_command
 from bot.handlers import monitoring_handler, filters_handler
 from bot.handlers import text_search, result_browser, tracking
@@ -40,8 +38,6 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-
-load_dotenv(encoding='utf-8')
 
 async def set_commands(bot: Bot):
     commands = [
