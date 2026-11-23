@@ -18,7 +18,37 @@ venv/
 diagnostics/
 media/
 screenshots/
-docs/
+# Local development notes and reports
+/docs/
+/LAB_REPORT.txt
+
+# Local AI agent instructions and workspace state
+AGENT.md
+AGENTS.md
+AGENTS.override.md
+agent.md
+agents.md
+CLAUDE.md
+GEMINI.md
+SKILL.md
+MEMORY.md
+.codex/
+.claude/
+.cursor/
+.continue/
+.windsurf/
+.opencode/
+.clinerules/
+.cursorrules
+.cursorignore
+.windsurfrules
+.aider*
+.github/copilot-instructions.md
+.github/instructions/
+.github/agents/
+.github/prompts/
+*.instructions.md
+*.prompt.md
 
 # Private Avito session exports
 *cookies*.json

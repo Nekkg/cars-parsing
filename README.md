@@ -42,11 +42,8 @@ python -m core.cli collect
 
 Для бота скопируйте [.env.example](.env.example) в локальный `.env` и задайте
 `TELEGRAM_BOT_TOKEN`. Для сайта этот файл необязателен. Параметры PostgreSQL,
-прокси и удалённого Selenium приведены в шаблоне и документации. Значения токенов,
+прокси и удалённого Selenium приведены в `.env.example`. Значения токенов,
 прокси, cookies и сеансы браузера должны оставаться локальными.
-
-[Подробный запуск](docs/NATIVE_RUN.md) · [Настройки и разработка](docs/DEVELOPMENT.md)
-· [Совместимость Python](docs/PYTHON_SUPPORT.md).
 
 ## Возможности
 
@@ -70,21 +67,12 @@ python -m core.cli collect
 python reference-parser-daa/manage.py test tests --noinput
 ```
 
-[Результаты и ограничения](docs/VALIDATION.md) · [Загрузка фотографий](docs/PHOTOS.md).
-
-## Структура и документация
+## Структура проекта
 
 Исходный код находится в `reference-parser-daa/`: `ads` — сайт и общий поиск,
 `bot` — Telegram, `parsers` — сбор, `users` — фильтры и уведомления,
 `core` — настройки и команды запуска, `tests` — тесты.
 Локальная база, кеш и журналы создаются в `runtime/` и исключены из Git.
-
-- [Архитектура](docs/ARCHITECTURE.md) и [движение данных](docs/DATA_FLOW.md).
-- [Структура модулей](docs/PROJECT_STRUCTURE.md).
-- [Три парсера](docs/PARSERS.md), [бот](docs/TELEGRAM_BOT.md), [сайт](docs/WEB_SERVICE.md).
-- [Поиск в боте](docs/BOT_SEARCH.md) и [поколения автомобилей](docs/GENERATIONS.md).
-- [Сеть и необязательные прокси](docs/NETWORK.md).
-- [Текст лабораторного отчёта](LAB_REPORT.txt).
 
 Docker остаётся дополнительным способом развёртывания. Его настройки находятся в
 `reference-parser-daa/docker-compose.yml`. Для лабораторной демонстрации
