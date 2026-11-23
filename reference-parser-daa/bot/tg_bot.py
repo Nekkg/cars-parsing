@@ -16,15 +16,15 @@ from core.network import telegram_session
 
 from dotenv import load_dotenv
 
-from commands import start_command, monitor_commands, filters_command
-from handlers import monitoring_handler, filters_handler
+from bot.commands import start_command, monitor_commands, filters_command
+from bot.handlers import monitoring_handler, filters_handler
 from bot.handlers import text_search, result_browser, tracking
 from bot.tracking import tracking_loop
 from bot.live_results import live_results_loop
-from handlers import vehicle_search
-from callbacks import filters_callback, filters_check_callback
-from ads_sender import main as start_ads_sender
-from broadcast_sender import broadcast_loop as start_broadcast_sender
+from bot.handlers import vehicle_search
+from bot.callbacks import filters_callback, filters_check_callback
+from bot.ads_sender import main as start_ads_sender
+from bot.broadcast_sender import broadcast_loop as start_broadcast_sender
 
 import logging
 from core.paths import BOT_LOG_FILE
@@ -56,6 +56,7 @@ async def set_commands(bot: Bot):
     await bot.set_my_commands(commands, scope=BotCommandScopeDefault())
 
 async def main():
+    bot = None
     try:
         bot = Bot(os.getenv('TELEGRAM_BOT_TOKEN'), session=telegram_session(), default=DefaultBotProperties(parse_mode='HTML'))
         dp = Dispatcher()
@@ -83,10 +84,11 @@ async def main():
             live_results_loop(bot),
             tracking_loop(bot),
             start_broadcast_sender(bot),
-            start_ads_sender(),
+            start_ads_sender(bot),
         )
     finally:
-        await bot.session.close()
+        if bot is not None:
+            await bot.session.close()
 
 if __name__ == "__main__":
     asyncio.run(main())

@@ -1,5 +1,5 @@
 from users.models import UserFilters
-from django.contrib.postgres.fields import ArrayField
+from core.fields import ArrayField
 from django.db import models
 from asgiref.sync import sync_to_async
 from ads.search import request_search

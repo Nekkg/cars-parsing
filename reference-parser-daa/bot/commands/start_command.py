@@ -3,8 +3,8 @@ from aiogram.filters import CommandStart
 from aiogram.types import Message
 from aiogram.fsm.context import FSMContext
 
-from services.start_service import get_start_message
-from keyboards.reply.start_kb import start_keyboard
+from bot.services.start_service import get_start_message
+from bot.keyboards.reply.start_kb import start_keyboard
 
 import logging
 logger = logging.getLogger(__name__)

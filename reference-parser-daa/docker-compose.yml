@@ -147,6 +147,7 @@ services:
       - .env
     environment:
       - TZ=${TZ:-UTC}
+      - SELENIUM_URL=http://chrome_driver:4444/wd/hub
     command: python -u -m parsers.collector
     restart: unless-stopped
     networks:

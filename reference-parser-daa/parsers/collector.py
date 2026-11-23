@@ -10,7 +10,7 @@ from datetime import timedelta
 os.environ.setdefault('DJANGO_SETTINGS_MODULE','core.settings')
 import django
 django.setup()
-from django.db import close_old_connections, transaction
+from django.db import close_old_connections, transaction, connection
 from django.utils import timezone
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -39,7 +39,11 @@ def saved_backoff_seconds(source):
     latest=timezone.now()
     from django.db.models import Max
     from parsers.models import VehicleAudit
-    audit_pause=VehicleAudit.objects.filter(source=source).exclude(evidence__contains={'error_type':'SourceUnavailable'}).aggregate(until=Max('pause_until'))['until']
+    audits = VehicleAudit.objects.filter(source=source)
+    if connection.features.supports_json_field_contains:
+        audit_pause = audits.exclude(evidence__contains={'error_type':'SourceUnavailable'}).aggregate(until=Max('pause_until'))['until']
+    else:
+        audit_pause = max((row.pause_until for row in audits if row.pause_until and row.evidence.get('error_type') != 'SourceUnavailable'), default=None)
     if audit_pause:latest=max(latest,audit_pause)
     for states in SearchJob.objects.values_list('source_state',flat=True):
         state = states.get(source, {})
@@ -118,14 +122,15 @@ def browser(source):
     session_file = DIAGNOSTICS_DIR / f'session_{source}.json'
     route = avito_proxy() if source == 'avito' else proxy_setting('SOURCES_PROXY_URL')
     saved = json.loads(session_file.read_text()) if session_file.exists() else {}
-    if saved.get('id') and saved.get('proxy') == route:
+    endpoint = os.getenv('SELENIUM_URL', '').strip()
+    if endpoint and saved.get('id') and saved.get('proxy') == route and saved.get('endpoint') == endpoint:
         session_id = saved['id']
         class AttachedBrowser(webdriver.Remote):
             def start_session(self, capabilities):
                 self.session_id = session_id
                 self.caps = {}
         try:
-            attached = AttachedBrowser('http://chrome_driver:4444/wd/hub',options=webdriver.ChromeOptions())
+            attached = AttachedBrowser(endpoint, options=webdriver.ChromeOptions())
             attached.title
             return attached
         except Exception:
@@ -133,7 +138,9 @@ def browser(source):
     options = webdriver.ChromeOptions()
     options.page_load_strategy = 'eager'
     if source == 'avito':
-        options.add_argument('--user-data-dir=/home/seluser/avito-profile')
+        from core.paths import SESSIONS_DIR
+        profile = '/home/seluser/avito-profile' if endpoint else str(SESSIONS_DIR / 'avito-chrome')
+        options.add_argument(f'--user-data-dir={profile}')
     options.add_argument(f'--proxy-server={route}' if route else '--no-proxy-server')
     # Avito remains visible in noVNC for a user's manual access check; no CAPTCHA solver.
     if source != 'avito':
@@ -141,10 +148,11 @@ def browser(source):
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
     options.add_argument('--window-size=1440,1000')
-    driver = webdriver.Remote('http://chrome_driver:4444/wd/hub',options=options)
+    driver = webdriver.Remote(endpoint, options=options) if endpoint else webdriver.Chrome(options=options)
     driver.set_page_load_timeout(45)
     session_file.parent.mkdir(exist_ok=True)
-    session_file.write_text(json.dumps({'id':driver.session_id,'proxy':route}))
+    if endpoint:
+        session_file.write_text(json.dumps({'id':driver.session_id,'proxy':route,'endpoint':endpoint}))
     return driver
 
 
@@ -571,7 +579,11 @@ def worker(source):
             driver = None
             time.sleep(10)
 
-if __name__ == '__main__':
+def main():
     threads = [threading.Thread(target=worker,args=(source,),daemon=False) for source in ('avito','drom','autoru')]
     for thread in threads: thread.start()
     for thread in threads: thread.join()
+
+
+if __name__ == '__main__':
+    main()

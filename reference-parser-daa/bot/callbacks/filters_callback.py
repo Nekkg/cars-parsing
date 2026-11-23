@@ -148,7 +148,7 @@ async def save_filter_value(message: Message, state: FSMContext):
     model_field = UserFilters._meta.get_field(filter_name)
     
     # Проверяем, является ли поле массивом
-    from django.contrib.postgres.fields import ArrayField
+    from core.fields import ArrayField
     if isinstance(model_field, ArrayField):
         # Для полей-массивов разделяем значения по запятой
         if "," in filter_value:

@@ -1,8 +1,9 @@
 """Local runtime artifacts live outside source packages."""
 from pathlib import Path
+import os
 
 APP_DIR = Path(__file__).resolve().parent.parent
-RUNTIME_DIR = APP_DIR / 'runtime'
+RUNTIME_DIR = Path(os.getenv('CARS_DATA_DIR', str(APP_DIR / 'runtime'))).expanduser().resolve()
 
 
 def runtime_directory(name):

@@ -18,10 +18,22 @@ venv/
 diagnostics/
 media/
 screenshots/
+docs/
 
 # Private Avito session exports
 *cookies*.json
 
 # Runtime artifacts
 runtime/
+.work/
+deliverables/
+*.egg-info/
+build/
+dist/
+
+# Word reports and temporary Word files stay local
+*.doc
+*.docx
+*.docm
+~$*.doc*
 

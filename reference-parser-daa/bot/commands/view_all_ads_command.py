@@ -1,7 +1,7 @@
 from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message
-from keyboards.inline.view_all_ads_kb import view_all_ads_keyboard
+from bot.keyboards.inline.view_all_ads_kb import view_all_ads_keyboard
 from bot.services.all_ads_msg import get_view_all_ads_response
 import os
 from html import escape

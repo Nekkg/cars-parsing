@@ -1,8 +1,8 @@
 from aiogram import Router, F
 from aiogram.types import Message
-from keyboards.inline.view_all_ads_kb import view_all_ads_keyboard
+from bot.keyboards.inline.view_all_ads_kb import view_all_ads_keyboard
 import os
-from commands.view_all_ads_command import view_all_ads_command
+from bot.commands.view_all_ads_command import view_all_ads_command
 
 import logging
 logger = logging.getLogger(__name__)

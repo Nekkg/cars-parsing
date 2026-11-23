@@ -2,13 +2,28 @@ from pathlib import Path
 from dotenv import load_dotenv
 import os
 
-load_dotenv(Path(__file__).resolve().parent.parent / '.env', encoding='utf-8')
+load_dotenv(os.getenv('CARS_ENV_FILE') or Path(__file__).resolve().parent.parent / '.env', encoding='utf-8')
 from core.config import required_env, env_port
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-SECRET_KEY = required_env('DJANGO_SECRET_KEY')
+LOCAL_SQLITE = os.getenv('CARS_DATABASE', 'postgres') == 'sqlite'
+if LOCAL_SQLITE:
+    from core.paths import RUNTIME_DIR
+    from django.core.management.utils import get_random_secret_key
+    RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+    key_file = RUNTIME_DIR / 'django-secret.key'
+    if not key_file.exists():
+        try:
+            with key_file.open('x', encoding='utf-8') as stream:
+                stream.write(get_random_secret_key())
+            key_file.chmod(0o600)
+        except FileExistsError:
+            pass
+    SECRET_KEY = os.getenv('DJANGO_SECRET_KEY') or key_file.read_text(encoding='utf-8')
+else:
+    SECRET_KEY = required_env('DJANGO_SECRET_KEY')
 
 DEBUG = os.getenv('DEBUG', 'False').lower() in ('true', '1', 'yes')
 
@@ -67,7 +82,11 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'core.wsgi.application'
 
-DATABASES = {
+DATABASES = {'default': {
+    'ENGINE': 'django.db.backends.sqlite3',
+    'NAME': str(RUNTIME_DIR / 'cars.sqlite3'),
+    'OPTIONS': {'timeout': 30, 'transaction_mode': 'IMMEDIATE'},
+}} if LOCAL_SQLITE else {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
         'NAME': os.getenv('POSTGRES_DB', 'default_db_name'),

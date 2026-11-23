@@ -5,9 +5,9 @@ import hashlib
 import json
 
 from django.db import transaction
-from django.db.models import Count, Q
+from django.db.models import Count, Q, Max
 from django.utils import timezone
-from ads.models import SearchJob, Delivery
+from ads.models import SearchJob, Delivery, Advertisement
 from ads.search import results, matches
 from ads.search_status import selected_sources
 from users.models import TrackedSearch, TrackingDelivery, User
@@ -51,10 +51,13 @@ def follow(user_id, chat_id, data, minutes):
         job, _ = SearchJob.objects.get_or_create(fingerprint=job_key, defaults={'kind': 'tracking', 'filters': deepcopy(data)})
         row, created = TrackedSearch.objects.get_or_create(user_id=user_id, fingerprint=key, defaults={
             'chat_id': chat_id, 'filters': deepcopy(data), 'search_job': job,
-            'interval_minutes': minutes, 'started_at': now, 'next_check_at': now + timedelta(minutes=minutes)})
+            'interval_minutes': minutes, 'started_at': now,
+            'start_ad_id': Advertisement.objects.aggregate(last=Max('pk'))['last'] or 0,
+            'next_check_at': now + timedelta(minutes=minutes)})
         row = TrackedSearch.objects.select_for_update().get(pk=row.pk)
         if not row.enabled:
             row.started_at = now
+            row.start_ad_id = Advertisement.objects.aggregate(last=Max('pk'))['last'] or 0
             row.last_check_at = None
         if created or not row.enabled or row.interval_minutes != minutes:
             row.next_check_at = now + timedelta(minutes=minutes)
@@ -91,10 +94,11 @@ def set_enabled(pk, user_id, chat_id, enabled):
             return None
         if enabled and not row.enabled:
             row.started_at = timezone.now()
+            row.start_ad_id = Advertisement.objects.aggregate(last=Max('pk'))['last'] or 0
             row.next_check_at = row.started_at + timedelta(minutes=row.interval_minutes)
             row.last_check_at = None
         row.enabled = enabled
-        row.save(update_fields=['enabled', 'started_at', 'next_check_at', 'last_check_at'])
+        row.save(update_fields=['enabled', 'started_at', 'start_ad_id', 'next_check_at', 'last_check_at'])
         if not enabled:
             TrackingDelivery.objects.filter(subscription=row, sent_at__isnull=True).delete()
         return row
@@ -172,7 +176,7 @@ def queue_new_ads():
         for row in watches:
             known = TrackingDelivery.objects.filter(user_id=row.user_id).values_list('advertisement_id', flat=True)
             legacy = Delivery.objects.filter(user_id=row.user_id).values_list('advertisement_id', flat=True)
-            eligible |= (Q(created_at__gte=row.started_at)
+            eligible |= (Q(created_at__gte=row.started_at, pk__gt=row.start_ad_id)
                          & (Q(published_at__isnull=True) | Q(published_at__gte=row.started_at))
                          & ~Q(pk__in=known) & ~Q(pk__in=legacy))
         ads = results(watches[0].filters, defer_media=True, created_since=cutoff, candidate_filter=eligible)
@@ -187,7 +191,7 @@ def queue_new_ads():
         for row in watches:
             for ad in ads:
                 key = (row.user_id, ad.pk)
-                if key in existing or key in new_pairs or ad.created_at < row.started_at:
+                if key in existing or key in new_pairs or ad.created_at < row.started_at or ad.pk <= row.start_ad_id:
                     continue
                 if ad.published_at and ad.published_at < row.started_at:
                     continue

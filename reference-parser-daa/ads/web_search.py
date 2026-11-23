@@ -25,13 +25,19 @@ def source_link(ad):
 
 def public_ad(ad):
     photos = unique_photos([ad.image, *(ad.images or [])], ad.platform) if ad.platform in SOURCE_NAMES else []
+    from .photo_cache import photo_key
+    photo_items = [dict(full=reverse('ads:photo', args=[ad.pk, index, 'full']) + '?v=' + photo_key(url, ad.platform, 'full')[:12],
+                        card=reverse('ads:photo', args=[ad.pk, index, 'card']) + '?v=' + photo_key(url, ad.platform, 'card')[:12])
+                   for index, url in enumerate(photos)]
     known = lambda v: '' if not v or v == 'unknown' else str(v)
     return dict(id=ad.pk, title=ad.name, price=ad.price, year=known(ad.year), city=ad.city,
                 mileage=ad.mileage, engine=known(ad.engine), gearbox=known(ad.gearbox),
                 drive=known(ad.drive), body_type=known(ad.body_type), color=known(ad.color),
                 owners=known(ad.owners), generation=known(ad.generation),
                 platform=ad.platform, platform_name=SOURCE_NAMES.get(ad.platform, ad.platform),
-                photos=photos, url=source_link(ad), detail_url=reverse('ads:ad_detail', args=[ad.ad_id]))
+                photos=photos, photo_items=photo_items, preview_url=photo_items[0]['card'] if photo_items else '',
+                display_photos=[item['full'] for item in photo_items],
+                url=source_link(ad), detail_url=reverse('ads:ad_detail', args=[ad.ad_id]))
 
 
 def stored_snapshot(sort_order='newest', platform='all', page=1):

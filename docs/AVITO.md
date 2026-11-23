@@ -8,7 +8,7 @@
 ```dotenv
 AVITO_TRANSPORT=http
 # Выберите свой доступный маршрут; пустое значение — прямое подключение.
-AVITO_PROXY_URL=http://host.docker.internal:3065
+AVITO_PROXY_URL=http://PROXY_HOST:PROXY_PORT
 # Необязательный профиль curl_cffi; по умолчанию firefox147.
 # AVITO_HTTP_PROFILE=firefox147
 ```

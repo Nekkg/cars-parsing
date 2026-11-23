@@ -1,6 +1,6 @@
 from django.db import models
 from django.utils import timezone
-from django.contrib.postgres.fields import ArrayField
+from core.fields import ArrayField
 
 class User(models.Model):
     name = models.CharField(max_length=255, null=True, blank=True)
@@ -63,6 +63,7 @@ class TrackedSearch(models.Model):
     enabled = models.BooleanField(default=True)
     created_at = models.DateTimeField(default=timezone.now)
     started_at = models.DateTimeField()
+    start_ad_id = models.PositiveBigIntegerField(default=0)
     next_check_at = models.DateTimeField()
     last_check_at = models.DateTimeField(null=True, blank=True)
 

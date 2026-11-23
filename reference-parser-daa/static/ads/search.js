@@ -200,9 +200,25 @@
   $('quick-form').addEventListener('submit',e=>{e.preventDefault(); if(!state.busy)runQuery();});
   all('[data-query]').forEach(n=>n.addEventListener('click',()=>{$('query').value=n.dataset.query; if(!state.busy)runQuery();}));
   function showPhoto(img, placeholder, url){
-    img.hidden=false; placeholder.hidden=true;
-    img.onerror=()=>{img.hidden=true; placeholder.hidden=false;};
-    if(url)img.src=url; else {img.removeAttribute('src'); img.hidden=true; placeholder.hidden=false;}
+    img._cancelPhoto?.();
+    img.hidden=true; placeholder.hidden=false;
+    const label=placeholder.querySelector('span')||placeholder;
+    const failed=()=>{img.hidden=true; placeholder.hidden=false; label.textContent=url?'Фото временно недоступно':'Нет фото';};
+    if(!url){img.removeAttribute('src'); failed(); return;}
+    label.textContent='Загрузка фото…';
+    let timer=null, observer=null;
+    const cancel=()=>{clearTimeout(timer); observer?.disconnect(); img.onload=img.onerror=null;};
+    img._cancelPhoto=cancel;
+    const load=()=>{
+      observer?.disconnect(); img.loading='eager';
+      img.onload=()=>{cancel(); img.hidden=false; placeholder.hidden=true;};
+      img.onerror=()=>{cancel(); failed();};
+      timer=setTimeout(()=>{cancel(); img.removeAttribute('src'); failed();},10000);
+      img.src=url;
+      if(img.complete&&img.naturalWidth){cancel(); img.hidden=false; placeholder.hidden=true;}
+    };
+    if('IntersectionObserver' in window){observer=new IntersectionObserver(entries=>{if(entries.some(e=>e.isIntersecting))load();},{rootMargin:'400px'}); observer.observe(img.closest('.car-photo')||img.parentElement);}
+    else load();
   }
   function render(data) {
     state.data=data; state.page=data.page; state.pages=data.pages;
@@ -230,7 +246,7 @@
       grid.dataset.signature=signature; const fragment=document.createDocumentFragment();
       for(const ad of data.items){const card=$('car-template').content.firstElementChild.cloneNode(true);
         const photo=card.querySelector('.car-photo'),title=card.querySelector('.car-title'); photo.href=ad.detail_url; title.href=ad.detail_url; title.textContent=ad.title; title.title=ad.title;
-        const img=card.querySelector('img'); img.alt=ad.title; showPhoto(img,card.querySelector('.no-photo'),ad.photos[0]);
+        const img=card.querySelector('img'); img.alt=ad.title; showPhoto(img,card.querySelector('.no-photo'),ad.preview_url||ad.photos[0]);
         card.querySelector('.platform-badge').textContent=ad.platform_name;
         card.querySelector('.car-price').textContent=number(ad.price)+' ₽';
         const specs=[]; if(ad.year)specs.push(ad.year+' г.'); if(ad.mileage!=null)specs.push(number(ad.mileage)+' км'); if(ad.engine)specs.push(ad.engine); if(ad.gearbox)specs.push(ad.gearbox);
@@ -240,6 +256,7 @@
         const link=card.querySelector('.source-link'); if(ad.url)link.href=ad.url; else link.hidden=true;
         fragment.append(card);
       }
+      grid.querySelectorAll('img').forEach(img=>img._cancelPhoto?.());
       grid.replaceChildren(fragment);
     }
     $('empty-state').hidden=Boolean(data.items.length);
@@ -262,9 +279,9 @@
   all('[data-view]').forEach(n=>n.addEventListener('click',()=>{$('results').classList.toggle('list-view',n.dataset.view==='list'); all('[data-view]').forEach(b=>{b.classList.toggle('active',b===n); b.setAttribute('aria-pressed',b===n);});}));
   $('prev-page').addEventListener('click',()=>{state.page=Math.max(1,state.page-1); poll(); $('results-title').scrollIntoView({behavior:'smooth'});});
   $('next-page').addEventListener('click',()=>{state.page=Math.min(state.pages,state.page+1); poll(); $('results-title').scrollIntoView({behavior:'smooth'});});
-  $('refresh').addEventListener('click',async()=>{if(!state.id&&!state.feed)return; $('refresh').disabled=true; try{if(state.id)await api(`/api/searches/${state.id}/refresh/`,{}); await poll();}catch(error){showError(error);}finally{$('refresh').disabled=false;}});
+  $('refresh').addEventListener('click',async()=>{if(!state.id&&!state.feed)return; $('refresh').disabled=true; try{if(state.id)await api(`/api/searches/${state.id}/refresh/`,{}); $('results').dataset.signature=''; await poll();}catch(error){showError(error);}finally{$('refresh').disabled=false;}});
 
-  function galleryPhoto(){if(!galleryCar)return; $('gallery-position').textContent=`Фото ${galleryIndex+1} / ${galleryCar.photos.length}`; $('gallery-image').alt=galleryCar.title; showPhoto($('gallery-image'),$('gallery-unavailable'),galleryCar.photos[galleryIndex]); $('gallery-prev').disabled=$('gallery-next').disabled=galleryCar.photos.length<2;}
+  function galleryPhoto(){if(!galleryCar)return; $('gallery-position').textContent=`Фото ${galleryIndex+1} / ${galleryCar.photos.length}`; $('gallery-image').alt=galleryCar.title; showPhoto($('gallery-image'),$('gallery-unavailable'),(galleryCar.display_photos||galleryCar.photos)[galleryIndex]); $('gallery-prev').disabled=$('gallery-next').disabled=galleryCar.photos.length<2;}
   function openGallery(ad){galleryCar=ad; galleryIndex=0; $('gallery-title').textContent=ad.title; $('gallery-price').textContent=number(ad.price)+' ₽ · '+ad.platform_name; $('gallery-source').hidden=!ad.url; if(ad.url)$('gallery-source').href=ad.url; galleryPhoto(); $('gallery').showModal();}
   function moveGallery(delta){if(!galleryCar)return; galleryIndex=(galleryIndex+delta+galleryCar.photos.length)%galleryCar.photos.length; galleryPhoto();}
   $('gallery-close').addEventListener('click',()=>$('gallery').close()); $('gallery-prev').addEventListener('click',()=>moveGallery(-1)); $('gallery-next').addEventListener('click',()=>moveGallery(1));

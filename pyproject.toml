@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cars-parser-lab"
+version = "1.2.0"
+description = "Django car search website, Telegram bot and shared collectors"
+requires-python = ">=3.11,<3.15"
+dependencies = [
+  "Django==5.2.19", "aiogram==3.28.2", "selenium==4.29.0",
+  "python-dotenv==1.0.1", "beautifulsoup4==4.13.4", "Pillow==12.0.0",
+  "psycopg2-binary==2.9.13", "aiohttp-socks==0.10.1", "curl_cffi==0.15.0",
+  "numpy==2.3.5", "opencv-python-headless==4.11.0.86", "pycryptodome==3.23.0"
+]
+
+[project.scripts]
+cars = "core.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "reference-parser-daa"}
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["reference-parser-daa"]
+include = ["core*", "ads*", "users*", "editing*", "parsers*", "bot*"]
+
+[tool.setuptools.package-data]
+ads = ["data/*.json", "data/*.csv", "templates/**/*.html", "static/**/*"]

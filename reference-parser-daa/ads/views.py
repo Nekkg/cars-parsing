@@ -179,3 +179,27 @@ def refresh_search(request, search_id):
 def ad_detail(request, ad_id):
     ad = get_object_or_404(Advertisement, ad_id=ad_id)
     return render(request, 'ads/detail.html', {'car':public_ad(ad), 'ad':ad})
+
+
+@require_GET
+def photo(request, pk, index, size):
+    from django.http import FileResponse, HttpResponse
+    from .photo_cache import cached_photo, SIZES
+    from parsers.photos import unique_photos
+    if size not in SIZES:
+        raise Http404
+    ad = get_object_or_404(Advertisement, pk=pk, platform__in=('avito', 'autoru', 'drom'))
+    urls = unique_photos([ad.image, *(ad.images or [])], ad.platform)
+    if index >= len(urls):
+        raise Http404
+    try:
+        path = cached_photo(urls[index], ad.platform, public_ad(ad)['url'], size)
+    except Exception:
+        response = HttpResponse(status=503)
+        response['Cache-Control'] = 'no-store'
+        response['Retry-After'] = '60'
+        return response
+    response = FileResponse(path.open('rb'), content_type='image/jpeg')
+    response['Cache-Control'] = 'public, max-age=86400'
+    response['X-Content-Type-Options'] = 'nosniff'
+    return response

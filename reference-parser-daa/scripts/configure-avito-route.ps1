@@ -1,4 +1,4 @@
-param([ValidateSet('msk','spb')][string]$Node = 'msk', [switch]$NoRestart)
+﻿param([ValidateSet('msk','spb')][string]$Node = 'msk', [switch]$NoRestart, [Parameter(Mandatory=$true)][string]$ProxyUrl)
 $ErrorActionPreference = 'Stop'
 $appRoot = Split-Path -Parent $PSScriptRoot
 $envPath = Join-Path $appRoot '.env'
@@ -37,7 +37,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Cannot restrict private config access' }
 $settingsText = [IO.File]::ReadAllText($envPath)
 $existingProfiles = [regex]::Match($settingsText, '(?m)^COMPOSE_PROFILES=(.*)$').Groups[1].Value.Trim()
 $profiles = @($existingProfiles.Split(',') | Where-Object { $_ -and $_ -ne 'web' -and $_ -ne 'avito-proxy' }) + @('avito-proxy')
-foreach ($setting in @(@('AVITO_PROXY_URL','http://avito_proxy:3068'), @('AVITO_TRANSPORT','http'), @('COMPOSE_PROFILES',($profiles -join ',')))) {
+foreach ($setting in @(@('AVITO_PROXY_URL',$ProxyUrl), @('AVITO_TRANSPORT','http'), @('COMPOSE_PROFILES',($profiles -join ',')))) {
     $regex = '(?m)^' + $setting[0] + '=.*$'
     $replacement = $setting[0] + '=' + $setting[1]
     if ([regex]::IsMatch($settingsText, $regex)) {

@@ -15,7 +15,7 @@ from asgiref.sync import sync_to_async
 from django.db import close_old_connections
 
 from users.models import User
-from services.remove_user_service import remove_user_from_db
+from bot.services.remove_user_service import remove_user_from_db
 from ads.models import Delivery
 from ads.search import results, snapshot
 from core.network import telegram_session
@@ -32,10 +32,6 @@ logging.basicConfig(
         logging.FileHandler(BOT_LOG_FILE, mode='a')
     ]
 )
-
-TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
-bot = Bot(token=TOKEN, session=telegram_session())
-
 
 def escape_md_v2(text: str) -> str:
     """
@@ -63,7 +59,7 @@ def link_md(title: str, url: str) -> str:
     """Оформляет ссылку (MarkdownV2)."""
     return f"[{title}]({url})"
 
-async def send_ad_to_user(user_id, ad):
+async def send_ad_to_user(bot: Bot, user_id, ad):
     """
     Отправляет объявление пользователю. Динамические данные проходят экранирование,
     затем форматируются с помощью функций bold_md, italic_md и link_md.
@@ -139,13 +135,13 @@ async def send_ad_to_user(user_id, ad):
 
 
 
-async def main():
+async def main(bot: Bot):
     while True:
         try:
             pairs = await sync_to_async(pending_deliveries)()
             for user_id, ad in pairs:
                 if not await sync_to_async(notification_allowed)(user_id,ad): continue
-                if await send_ad_to_user(user_id, ad.__dict__):
+                if await send_ad_to_user(bot, user_id, ad.__dict__):
                     await Delivery.objects.aget_or_create(user_id=user_id, advertisement=ad, price=ad.price)
                 await asyncio.sleep(1.1)
         except Exception as error:
@@ -157,5 +153,12 @@ async def main():
 from ads.notifications import pending_deliveries, notification_allowed
 
 if __name__ == "__main__":
-    asyncio.run(main())
-    logging.info("Ads sender is running...")
+    async def run_standalone():
+        from core.config import required_env
+        bot = Bot(token=required_env('TELEGRAM_BOT_TOKEN'), session=telegram_session())
+        try:
+            await main(bot)
+        finally:
+            await bot.session.close()
+
+    asyncio.run(run_standalone())

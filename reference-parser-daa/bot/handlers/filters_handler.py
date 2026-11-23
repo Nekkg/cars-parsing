@@ -1,8 +1,8 @@
 from aiogram.types import Message
 from aiogram import Router, F
 from aiogram.fsm.context import FSMContext
-from keyboards.inline.filters_kb import filters_keyboard
-from services.filters_service import get_user_filters
+from bot.keyboards.inline.filters_kb import filters_keyboard
+from bot.services.filters_service import get_user_filters
 
 import logging
 logger = logging.getLogger(__name__)

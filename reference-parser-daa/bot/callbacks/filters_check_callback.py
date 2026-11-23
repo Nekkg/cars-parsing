@@ -1,9 +1,9 @@
 from aiogram import Router, F
 from aiogram.types import CallbackQuery
 from aiogram.fsm.context import FSMContext
-from keyboards.inline.filters_kb import filters_keyboard
-from services.filters_service import get_user_filters
-from services.monitoring_switch_service import enable_monitoring
+from bot.keyboards.inline.filters_kb import filters_keyboard
+from bot.services.filters_service import get_user_filters
+from bot.services.monitoring_switch_service import enable_monitoring
 
 import logging
 logger = logging.getLogger(__name__)

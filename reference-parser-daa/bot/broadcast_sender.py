@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 from django.db import close_old_connections
 from aiogram.types import FSInputFile
 from io import BytesIO
-from services.broadcast_service import get_broadcast_messages, get_users
+from bot.services.broadcast_service import get_broadcast_messages, get_users
 
 load_dotenv()
 
